@@ -55,6 +55,8 @@ Categories=AudioVideo;Video;
 Terminal=false
 DESK
 cp "$ROOT/assets/ani-c3d.png" "$W/AppDir/ani-c3d.png"
-ARCH=x86_64 "$TOOL" --appimage-extract-and-run "$W/AppDir" "$ROOT/dist/ani-c3d-x86_64.AppImage" > "$W/appimagetool.log" 2>&1 || { tail -20 "$W/appimagetool.log"; exit 1; }
+ARCH=x86_64 "$TOOL" --appimage-extract-and-run "$W/AppDir" "$W/ani-c3d-x86_64.AppImage" > "$W/appimagetool.log" 2>&1 || { tail -20 "$W/appimagetool.log"; exit 1; }
+# rename into place, so a copy that is still running keeps its old file instead of blocking the build
+mv -f "$W/ani-c3d-x86_64.AppImage" "$ROOT/dist/ani-c3d-x86_64.AppImage"
 ls -la "$ROOT/dist/ani-c3d-x86_64.AppImage"
 echo "bundled libraries: $(ls "$W/AppDir/usr/lib" | tr '\n' ' ')"

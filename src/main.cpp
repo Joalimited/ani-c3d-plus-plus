@@ -511,13 +511,23 @@ static int run_window() {
     SDL_GL_GetDrawableSize(w.win, &dw, &dh);
     App app(r, (double)dw / std::max(1, ww));
     app.gpu_label = "OPENGL";
-    SDL_StartTextInput();
+    // text input only while a text box has focus: with it on, KDE/Wayland passes letters through its input-method path,
+    // which turns a held A/D/W/S into one instant press + release, so walking with letters never worked
+    bool text_on = false;
+    SDL_StopTextInput();
     bool keylog = !paths::getenv_or("ANIC3D_KEYLOG", "").empty();
     double secs = std::atof(paths::getenv_or("ANIC3D_SELFTEST", paths::getenv_or("ANI3D_SELFTEST", "0")).c_str());
     double started = since_start(), last = started;
     int frames = 0;
     bool quit = false;
     while (!quit) {
+        bool want_text = (app.mode == "world" && app.typing) || app.lib_typing;
+        if (want_text != text_on) {
+            text_on = want_text;
+            app.swallow.reset();  // the key that opened the box ("/") sent no text while input was off
+            if (text_on) SDL_StartTextInput();
+            else SDL_StopTextInput();
+        }
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
