@@ -1,0 +1,15 @@
+# build output
+build/
+dist/
+compile_commands.json
+
+# packaged binaries and local build inputs
+*.AppImage
+*.exe
+mpv.zip
+mesa.zip
+
+# personal data that must never be committed
+*.db
+*.sqlite
+settings.json
