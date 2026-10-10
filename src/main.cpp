@@ -92,7 +92,17 @@ static Window open_window(int w, int h, bool hidden) {
 }
 
 // ---------------------------------------------------------------- SDL keys -> the key names the app uses
-static std::string key_name(SDL_Keycode k, Uint16 mod) {
+static std::string key_name(const SDL_Keysym& ks) {
+    SDL_Keycode k = ks.sym;
+    Uint16 mod = ks.mod;
+    // letters come from the physical key: on SDL3 (sdl2-compat) the keycode can carry Caps Lock / layout changes, which
+    // turned A/D/W/S into names the movement code never looked for
+    if (ks.scancode >= SDL_SCANCODE_A && ks.scancode <= SDL_SCANCODE_Z) {
+        SDL_Keycode lk = SDL_GetKeyFromScancode(ks.scancode);
+        char c = (lk >= 'a' && lk <= 'z') ? (char)lk : (lk >= 'A' && lk <= 'Z') ? (char)(lk + 32) : (char)('a' + (ks.scancode - SDL_SCANCODE_A));
+        if (mod & KMOD_SHIFT) c = (char)(c - 32);
+        return std::string(1, c);
+    }
     switch (k) {
         case SDLK_RETURN:
         case SDLK_KP_ENTER: return "Enter";
@@ -123,6 +133,7 @@ static std::string key_name(SDL_Keycode k, Uint16 mod) {
     }
     if (k >= 32 && k < 127) {
         char c = (char)k;
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
         if (c >= 'a' && c <= 'z' && (mod & KMOD_SHIFT)) c = (char)(c - 32);
         return std::string(1, c);
     }
@@ -383,6 +394,29 @@ static void selftest_step(App& app, int frame, double el, double secs, bool& qui
     }
     if (at(380)) shot("01-search");
     if (at(700)) shot("02-library");
+    // walk with real SDL key events (D then A, Caps Lock style upper-case keycodes) to test the whole key path
+    static double walk_x0 = 0, walk_x1 = 0;
+    auto push_key = [](Uint32 type, SDL_Scancode sc) {
+        SDL_Event e{};
+        e.type = type;
+        e.key.keysym.scancode = sc;
+        e.key.keysym.sym = SDL_GetKeyFromScancode(sc) - 32;  // 'D' / 'A'
+        e.key.keysym.mod = KMOD_CAPS;
+        SDL_PushEvent(&e);
+    };
+    if (at(705) && app.lib) {
+        walk_x0 = app.lib->px;
+        push_key(SDL_KEYDOWN, SDL_SCANCODE_D);
+    }
+    if (at(720) && app.lib) {
+        push_key(SDL_KEYUP, SDL_SCANCODE_D);
+        walk_x1 = app.lib->px;
+        push_key(SDL_KEYDOWN, SDL_SCANCODE_A);
+    }
+    if (at(735) && app.lib) {
+        push_key(SDL_KEYUP, SDL_SCANCODE_A);
+        std::cout << "selftest: walk d " << walk_x0 << " -> " << walk_x1 << ", a -> " << app.lib->px << std::endl;
+    }
     if (at(760)) {
         std::cout << "selftest: mode=" << app.mode << " sections=" << sec(app.lib.get()) << std::endl;
         ev("Enter");  // pick the book next to the person
@@ -478,6 +512,7 @@ static int run_window() {
     App app(r, (double)dw / std::max(1, ww));
     app.gpu_label = "OPENGL";
     SDL_StartTextInput();
+    bool keylog = !paths::getenv_or("ANIC3D_KEYLOG", "").empty();
     double secs = std::atof(paths::getenv_or("ANIC3D_SELFTEST", paths::getenv_or("ANI3D_SELFTEST", "0")).c_str());
     double started = since_start(), last = started;
     int frames = 0;
@@ -495,12 +530,21 @@ static int run_window() {
                     app.on_wheel(-dy * 100.0);  // wheel down = positive dy, about 100 per notch (like the browser events)
                     break;
                 }
-                case SDL_TEXTINPUT: app.on_char(ev.text.text); break;
-                case SDL_KEYDOWN:
-                    if (ev.key.repeat) break;  // held keys are repeated by the app itself (see TextInput)
-                    app.on_key_down(key_name(ev.key.keysym.sym, ev.key.keysym.mod), mod_names(ev.key.keysym.mod));
+                case SDL_TEXTINPUT:
+                    if (keylog) std::cerr << "text '" << ev.text.text << "'" << std::endl;
+                    app.on_char(ev.text.text);
                     break;
-                case SDL_KEYUP: app.on_key_up(key_name(ev.key.keysym.sym, ev.key.keysym.mod)); break;
+                case SDL_KEYDOWN:
+                    if (keylog)
+                        std::cerr << "key down sym=" << ev.key.keysym.sym << " scancode=" << ev.key.keysym.scancode << " mod=" << ev.key.keysym.mod
+                                  << " repeat=" << (int)ev.key.repeat << " -> '" << key_name(ev.key.keysym) << "'" << std::endl;
+                    if (ev.key.repeat) break;  // held keys are repeated by the app itself (see TextInput)
+                    app.on_key_down(key_name(ev.key.keysym), mod_names(ev.key.keysym.mod));
+                    break;
+                case SDL_KEYUP:
+                    if (keylog) std::cerr << "key up   -> '" << key_name(ev.key.keysym) << "'" << std::endl;
+                    app.on_key_up(key_name(ev.key.keysym));
+                    break;
                 case SDL_WINDOWEVENT:
                     if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) app.keys.clear();  // releases we will never see
                     break;

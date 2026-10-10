@@ -40,6 +40,6 @@ a change in one is easy to find in the other.
 ## Environment variables
 
 `ANI_CLI_WATCH_DB` (history database), `ANIC3D_THEME` (start theme), `ANIC3D_MPV_ARGS` (extra mpv options),
-`ANIC3D_LOG` (log file), `ANIC3D_SELFTEST` / `ANIC3D_SHOTS` / `ANIC3D_SELFTEST_GAMES` (testing), `ANIC3D_NO_OPEN`
+`ANIC3D_LOG` (log file), `ANIC3D_KEYLOG=1` (print every key event SDL delivers), `ANIC3D_SELFTEST` / `ANIC3D_SHOTS` / `ANIC3D_SELFTEST_GAMES` (testing), `ANIC3D_NO_OPEN`
 (don't launch browsers / viewers), `ANIC3D_SOFTWARE_GL=1` (force the software renderer). The `ANI3D_*` names from
 ani-3d are accepted too.

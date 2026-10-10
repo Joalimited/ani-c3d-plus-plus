@@ -1,5 +1,6 @@
 #include "app.hpp"
 
+#include <cctype>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1187,7 +1188,13 @@ void App::on_key_down(const std::string& key, const std::set<std::string>& mods_
     on_key(key);
 }
 
-void App::on_key_up(const std::string& key) { keys.erase(key); }
+void App::on_key_up(const std::string& key) {
+    keys.erase(key);
+    if (key.size() == 1 && std::isalpha((unsigned char)key[0])) {  // Shift pressed or let go while the letter was held
+        keys.erase(std::string(1, (char)std::tolower((unsigned char)key[0])));
+        keys.erase(std::string(1, (char)std::toupper((unsigned char)key[0])));
+    }
+}
 
 void App::on_key(const std::string& key) {
     if (lib_typing) {  // the librarian's question
