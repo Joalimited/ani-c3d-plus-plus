@@ -51,6 +51,10 @@ private:
     void play(const std::string& ep, double start = 0);
     void watch(std::shared_ptr<mpvlink::Proc> proc, long long token);
     void auto_skip();
+    void send_ranges(const std::shared_ptr<mpvlink::Link>& link);
+    std::string last_ranges_;
+    long long aniskip_tok_ = -1;
+    double ranges_at_ = 0;
     void save_resume(bool finished = false);
     void kill();
     void mpv(const json& cmd);

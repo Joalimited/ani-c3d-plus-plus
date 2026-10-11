@@ -452,6 +452,18 @@ void Library::toggle_star(const BookP& b) {
     else if (!b->starred && b->section == "planning") app.status = "Removed from your watch list (it leaves the shelf when you close the book)";
 }
 
+// take book i off the shelf and open it (Enter next to it, or a double click on its spine)
+void Library::open_shelf_book(int i) {
+    pick = Pick{i, 0.0, false};
+    bv = std::make_shared<BookView>(app, books[i], kind, app.manga_rtl);
+    if (kind == "manga") app.ensure_chapters(books[i]);  // fetch the chapter list while the book is opening
+    zoom = 1.0;
+    pan[0] = pan[1] = 0;
+    focus = "spread";
+    auto_.reset();
+    app.fetch_book_poster(books[i]);
+}
+
 void Library::key(const std::string& k) {
     if (pick) {
         if (k == "=" || k == "+") {
@@ -489,14 +501,7 @@ void Library::key(const std::string& k) {
         return;
     }
     if ((k == "Enter" || k == "e") && near) {
-        pick = Pick{*near, 0.0, false};
-        bv = std::make_shared<BookView>(app, books[*near], kind, app.manga_rtl);
-        if (kind == "manga") app.ensure_chapters(books[*near]);  // fetch the chapter list while the book is opening
-        zoom = 1.0;
-        pan[0] = pan[1] = 0;
-        focus = "spread";
-        auto_.reset();
-        app.fetch_book_poster(books[*near]);
+        open_shelf_book(*near);
     } else if (k == "c" && next_up) {
         const Book& b = *books[*next_up];
         auto_ = std::make_pair(b.x, b.row);
@@ -562,7 +567,11 @@ bool Library::click(const V3& origin, const V3& direction) {
         }
         auto i = pick_book(origin, direction);
         if (i) {
-            walk_to(*i);
+            bool twice = last_click_book == *i && app.t - last_click_t < 0.5;  // double click: open it right there
+            last_click_book = twice ? -1 : *i;
+            last_click_t = app.t;
+            if (twice) open_shelf_book(*i);
+            else walk_to(*i);
             return true;
         }
     }

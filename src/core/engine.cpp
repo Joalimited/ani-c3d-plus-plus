@@ -54,6 +54,66 @@ json Engine::snapshot() {
             {"autoskip", {{"intro", autoskip_["intro"]}, {"outro", autoskip_["outro"]}}}};
 }
 
+static const char* const SKIP_LUA = R"LUA(-- ani-c3d: an on-screen SKIP INTRO / SKIP CREDITS button inside the mpv window (written by the app at each playback)
+local ia, ib, oa, ob = -1, -1, -1, -1
+local pos, dur = 0, 0
+local overlay = mp.create_osd_overlay("ass-events")
+overlay.res_x, overlay.res_y = 1280, 720
+local X0, Y0, X1, Y1 = 1000, 590, 1250, 650   -- the button, in 1280x720 overlay coordinates
+local shown, which, bound = nil, nil, false
+
+local function mouse_in()
+    local mx, my = mp.get_mouse_pos()
+    local w, h = mp.get_osd_size()
+    if not w or w <= 0 then return false end
+    mx, my = mx * 1280 / w, my * 720 / h
+    return mx >= X0 and mx <= X1 and my >= Y0 and my <= Y1
+end
+
+local function click(t)
+    if t.event ~= "up" then return end
+    if shown and mouse_in() then
+        mp.commandv("script-message", "anic3d-skip", which)
+    else
+        mp.commandv("cycle", "pause")   -- not on the button: the default click-to-pause
+    end
+end
+
+local function draw()
+    local want, label = nil, nil
+    -- only where the intro / credits really are (stream timestamps, chapters or the AniSkip database)
+    if ia >= 0 and ib > ia and pos >= ia - 1 and pos < ib - 1 then want, label = "intro", "SKIP INTRO" end
+    if not want and oa >= 0 and ob > oa and pos >= oa - 1 and pos < ob - 1 then want, label = "outro", "SKIP CREDITS" end
+    if not want then
+        if shown then
+            shown = nil
+            overlay:remove()
+            if bound then mp.remove_key_binding("anic3d-click") bound = false end
+        end
+        return
+    end
+    which = want
+    shown = want
+    if not bound then mp.add_forced_key_binding("MBTN_LEFT", "anic3d-click", click, {complex = true}) bound = true end
+    local hot = mouse_in()
+    local fill = hot and "FFFFFF" or "202020"
+    local text = hot and "000000" or "FFFFFF"
+    overlay.data = string.format(
+        "{\\an7\\pos(0,0)\\1c&H%s&\\1a&H20&\\3c&HFFFFFF&\\bord2\\p1}m %d %d l %d %d %d %d %d %d{\\p0}\n" ..
+        "{\\an5\\pos(%d,%d)\\1c&H%s&\\bord0\\fs30\\b1}%s  >>",
+        fill, X0, Y0, X1, Y0, X1, Y1, X0, Y1, (X0 + X1) / 2, (Y0 + Y1) / 2, text, label)
+    overlay:update()
+end
+
+mp.observe_property("time-pos", "number", function(_, v) pos = v or 0 draw() end)
+mp.observe_property("duration", "number", function(_, v) dur = v or 0 end)
+mp.observe_property("mouse-pos", "native", function() if shown then draw() end end)
+mp.register_script_message("anic3d-range", function(a, b, c, d)
+    ia, ib, oa, ob = tonumber(a) or -1, tonumber(b) or -1, tonumber(c) or -1, tonumber(d) or -1
+    draw()
+end)
+)LUA";
+
 // Intro / outro ranges: the stream's own timestamps, else mpv chapters called OP/ED, else none (the buttons then use fixed jumps).
 json Engine::skip_ranges() {
     std::lock_guard<std::recursive_mutex> lk(mu_);
@@ -73,8 +133,12 @@ json Engine::skip_ranges() {
             }
         }
     }
+    double dur = num("duration");
     json out = json::object();
-    for (auto& [k, v] : found) out[k] = {v.first, v.second};
+    for (auto& [k, v] : found) {
+        if (k == "intro" && dur > 300 && v.first > dur * 0.5) continue;  // an "opening" in the second half is a mislabelled ending
+        out[k] = {v.first, v.second};
+    }
     return out;
 }
 
@@ -303,10 +367,17 @@ void Engine::play(const std::string& ep, double start) {
         args.push_back("--demuxer-lavf-format=hls");
         args.push_back("--demuxer-lavf-o=allowed_extensions=ALL,allowed_segment_extensions=ALL,extension_picky=0");
     }
+    {  // the on-screen SKIP INTRO button is a small Lua script written next to the cache
+        std::string lua = paths::join(paths::cache_dir(), "anic3d-skip.lua");
+        paths::makedirs(paths::cache_dir());
+        paths::write_file(lua, SKIP_LUA);
+        args.push_back("--script=" + lua);
+    }
     if (autofs_) args.push_back("--fullscreen");
     for (const char* env : {"ANIC3D_MPV_ARGS", "ANI3D_MPV_ARGS"})  // extra mpv options (used by the headless self-tests)
         for (auto& x : su::split_ws(paths::getenv_or(env, ""))) args.push_back(x);
     late_sub_.clear();
+    last_ranges_.clear();
     if (!sub.empty() && hls) late_sub_ = sub;  // the forced hls format would also apply to --sub-file, so mpv could not read the .vtt
     else if (!sub.empty()) args.push_back("--sub-file=" + sub);
     if (start > 0) args.push_back("--start=" + std::to_string((long long)start));
@@ -335,6 +406,9 @@ void Engine::watch(std::shared_ptr<mpvlink::Proc> proc, long long token) {
     if (link) {
         const char* props[] = {"time-pos", "duration", "pause", "volume", "mute", "speed", "chapter-list"};
         for (int i = 0; i < 7; i++) link->send(json({{"command", {"observe_property", i + 1, props[i]}}}).dump() + "\n");
+        // keys inside the mpv window: K skips the opening, Shift+K the ending (same logic as the SKIP buttons)
+        link->send(json({{"command", {"keybind", "k", "script-message anic3d-skip intro"}}}).dump() + "\n");
+        link->send(json({{"command", {"keybind", "K", "script-message anic3d-skip outro"}}}).dump() + "\n");
         std::string line;
         while (link->readline(line)) {
             json m;
@@ -359,7 +433,37 @@ void Engine::watch(std::shared_ptr<mpvlink::Proc> proc, long long token) {
                     save_resume();
                 }
                 if (name == "time-pos" || name == "chapter-list") auto_skip();
+                if (name == "time-pos" || name == "chapter-list") send_ranges(link);
                 if (name == "duration" && m.contains("data") && !m["data"].is_null()) {
+                    bool lookup = false;
+                    std::string a_title, a_ep;
+                    {
+                        std::lock_guard<std::recursive_mutex> lk(mu_);
+                        if (aniskip_tok_ != token) {  // once per playback: fill in the timestamps the stream didn't carry
+                            aniskip_tok_ = token;
+                            lookup = !skip_.count("intro") || !skip_.count("outro");
+                            a_title = anime_.second;
+                            a_ep = cur_ep_;
+                        }
+                    }
+                    if (lookup)
+                        std::thread([this, link, token, a_title, a_ep] {
+                            json found;
+                            try {
+                                found = core::aniskip(a_title, a_ep);
+                            } catch (...) {
+                                return;
+                            }
+                            {
+                                std::lock_guard<std::recursive_mutex> lk(mu_);
+                                if (token != token_) return;
+                                for (auto& [k, v] : found.items())
+                                    if (!skip_.count(k) && v.is_array() && v.size() == 2) skip_[k] = {v[0].get<double>(), v[1].get<double>()};
+                                last_ranges_.clear();
+                            }
+                            send_ranges(link);
+                            emit(true);
+                        }).detach();
                     std::string sub;
                     {
                         std::lock_guard<std::recursive_mutex> lk(mu_);
@@ -370,6 +474,15 @@ void Engine::watch(std::shared_ptr<mpvlink::Proc> proc, long long token) {
                         link->send(json({{"command", {"sub-add", sub, "select"}}}).dump() + "\n");
                     }
                 }
+            } else if (ev == "client-message" && m.contains("args") && m["args"].is_array() && m["args"].size() == 2 &&
+                       m["args"][0] == "anic3d-skip") {
+                std::string which = m["args"][1] == "outro" ? "skip_outro" : "skip_intro";
+                bool current;
+                {
+                    std::lock_guard<std::recursive_mutex> lk(mu_);
+                    current = token == token_;
+                }
+                if (current) std::thread([this, which] { try { control(which, json(nullptr)); } catch (...) {} }).detach();
             } else if (ev == "end-file" && m.value("reason", "") == "eof") {
                 std::lock_guard<std::recursive_mutex> lk(mu_);
                 eof_ = true;
@@ -399,6 +512,19 @@ void Engine::watch(std::shared_ptr<mpvlink::Proc> proc, long long token) {
             if (send) send({{"event", "error"}, {"message", e.what()}});
         }
     }
+}
+
+// Tell the on-screen button script where the intro / credits are (about once a second, and whenever they change)
+void Engine::send_ranges(const std::shared_ptr<mpvlink::Link>& link) {
+    json rng = skip_ranges();
+    auto get = [&](const char* k, int i) { return rng.contains(k) ? rng[k][i].get<double>() : -1.0; };
+    std::string key = std::to_string(get("intro", 0)) + "," + std::to_string(get("intro", 1)) + "," + std::to_string(get("outro", 0)) + "," +
+                      std::to_string(get("outro", 1));
+    if (key == last_ranges_ && wall() - ranges_at_ < 5) return;
+    last_ranges_ = key;
+    ranges_at_ = wall();
+    link->send(json({{"command", {"script-message", "anic3d-range", std::to_string(get("intro", 0)), std::to_string(get("intro", 1)),
+                                  std::to_string(get("outro", 0)), std::to_string(get("outro", 1))}}}).dump() + "\n");
 }
 
 // Honour the intro / credits auto-skip switches for the episode that is playing (once each).

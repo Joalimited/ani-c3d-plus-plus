@@ -93,6 +93,9 @@ public:
     void drag_move(const V3& origin, const V3& dir);
     void drop();
     void walk_to(int i);
+    void open_shelf_book(int i);
+    int last_click_book = -1;
+    double last_click_t = -10;
     bool librarian_near() const;
     void relayout();
     void toggle_plan(const BookP& b, std::optional<bool> on = std::nullopt);

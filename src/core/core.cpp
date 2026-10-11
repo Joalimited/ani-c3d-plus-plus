@@ -1030,6 +1030,47 @@ static json anilist(const std::string& query, const json& variables = json::obje
     return get_json(r)["data"];
 }
 
+// Intro / credits timestamps from the crowd-sourced AniSkip database (looked up by MAL id, found through AniList).
+// Returns {"intro":[a,b],"outro":[a,b]} (either may be missing), or an empty object.
+json aniskip(const std::string& title, const std::string& ep) {
+    return cache::cached("aniskip:" + norm(title) + ":" + ep, 12 * 3600, [&]() -> json {
+        json out = json::object();
+        try {
+            if (ep.empty() || ep.find_first_not_of("0123456789") != std::string::npos) return out;
+            json d = anilist("query($s:String){Page(perPage:6){media(search:$s,type:ANIME,sort:SEARCH_MATCH){idMal format episodes "
+                             "title{romaji english} synonyms}}}", {{"s", title}});
+            std::string want = norm(title);
+            const json* pick = nullptr;
+            for (auto& m : d["Page"]["media"]) {
+                if (m["idMal"].is_null()) continue;
+                std::set<std::string> names = {norm(S(m["title"], "english")), norm(S(m["title"], "romaji"))};
+                for (auto& x : O(m, "synonyms"))
+                    if (x.is_string()) names.insert(norm(x.get<std::string>()));
+                if (names.count(want)) {
+                    pick = &m;
+                    break;
+                }
+                if (!pick && (S(m, "format") == "TV" || S(m, "format") == "ONA")) pick = &m;
+            }
+            if (!pick) return out;
+            http::Req r;
+            r.url = "https://api.aniskip.com/v2/skip-times/" + std::to_string((long long)(*pick)["idMal"].get<double>()) + "/" + ep +
+                    "?types=op&types=ed&episodeLength=0";
+            r.timeout = 15;
+            r.headers = {{"User-Agent", "ani-3d"}};
+            json j = get_json(r);
+            for (auto& it : O(j, "results")) {
+                std::string t = S(it, "skipType");
+                const json& iv = it["interval"];
+                std::string k = t == "op" ? "intro" : t == "ed" ? "outro" : "";
+                if (!k.empty() && !out.contains(k)) out[k] = {iv["startTime"].get<double>(), iv["endTime"].get<double>()};
+            }
+        } catch (...) {
+        }
+        return out;
+    });
+}
+
 json anilist_top(int n) {
     return cache::cached("al:top:" + std::to_string(n), 6 * 3600, [&] {
         json d = anilist("query($n:Int){Page(perPage:$n){media(type:ANIME,sort:SCORE_DESC,format_in:[TV,MOVIE],popularity_greater:50000){" + AL_FIELDS + "}}}",

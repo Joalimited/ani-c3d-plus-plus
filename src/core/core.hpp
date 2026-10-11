@@ -33,7 +33,8 @@ std::string backend(const std::vector<std::string>& args);
 // ---------- posters / manga ----------
 std::string fetch_poster(const std::string& url);  // local file path
 json find_manga(const std::string& title);          // [[id, name, chapters], ...]
-json related_content(const std::string& title);     // {novels, games, sites}
+json related_content(const std::string& title);
+json aniskip(const std::string& title, const std::string& ep);  // {intro:[a,b], outro:[a,b]} from AniSkip     // {novels, games, sites}
 
 json md_search(const std::string& query, int n = 30);
 json md_alt_titles(const std::vector<std::string>& ids);  // {id: [en, jp]}
