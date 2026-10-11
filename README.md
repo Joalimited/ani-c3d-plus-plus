@@ -10,7 +10,8 @@ book reader, eight themes, seven arcade games and trophies - as one native progr
 starts in well under a second, the Linux AppImage is about 12 MB and the Windows exe is a single file.
 
 Runs on Linux and Windows with any GPU driver that supports OpenGL 3.3. On a Windows PC without a graphics driver (a
-virtual machine, for example) it falls back to a bundled software renderer by itself.
+virtual machine, for example) it falls back to a bundled software renderer by itself. There is also an **Android / Fire
+TV build** with a remote-control dashboard - see [Fire TV / Android](#fire-tv--android).
 
 ## Getting started
 
@@ -43,6 +44,95 @@ doesn't. On Windows give it a file to write to: `ani-c3d.exe --check check.txt`.
 If you used the Python ani-3d before, ani-c3d picks up the same watch history and, on its first start, your ani-3d
 settings (theme, reading direction, skip switches, recent librarian searches).
 
+## Fire TV / Android
+
+A separate APK build runs the same app on an Amazon **Fire TV Stick** (tested on the Fire TV Stick 4K Max, Fire OS 7 /
+Android 11) and on other Android TV / Android 7+ devices with OpenGL ES 3.0. It is made for the remote, not a mouse and
+keyboard: the 3D world becomes a dashboard in the spirit of the original Xbox dashboard, with the same neon themes.
+
+### Install on a Fire TV Stick
+
+1. Get `ani-c3d-firetv.apk` from the [Releases](../../releases) page (or build it, see below).
+2. On the stick enable **Settings > My Fire TV > Developer Options > ADB debugging** and
+   **Install unknown apps** for the app you sideload with. (If Developer Options is missing: Settings > My Fire TV >
+   About, then press Select on the device name seven times.)
+3. Note the stick's IP address: **Settings > My Fire TV > About > Network**.
+4. From a computer on the same network:
+
+   ```sh
+   adb connect 192.168.1.50:5555          # use your stick's IP; accept the "Allow USB debugging?" prompt on the TV
+   adb install -r ani-c3d-firetv.apk      # -r keeps your watchlist and history when updating
+   adb shell am start -n com.ani.c3d/.MainActivity
+   ```
+
+   No `adb` installed? On Fedora `sudo dnf install android-tools`, on Debian / Ubuntu `sudo apt install adb`, or use
+   the build container (below). A sideloading app such as *Downloader* on the stick also works if you host the APK.
+5. The app shows up under **Apps & Games** as **ani-c3d**. Useful extras:
+
+   ```sh
+   adb logcat -s ani-c3d                  # fps, key presses, subtitles, errors
+   adb shell am force-stop com.ani.c3d    # close it
+   adb uninstall com.ani.c3d              # remove it (and its data)
+   ```
+
+### Remote controls
+
+| Where | Button | Does |
+| --- | --- | --- |
+| Dashboard | Left / Right | switch category (Currently Watching, Recommended, Popular, ... then WATCHING, DISCOVER, MANGA, SEARCH, HISTORY, WATCHLIST, THEME) |
+| | Up / Down | move through the titles of a category |
+| | Select | open a title (or run the focused tab; SEARCH opens the Fire TV keyboard) |
+| | Menu | jump to the tab strip and back |
+| | Back | close / go up; at the top it leaves the app |
+| Title page | Select | START / CONTINUE, ADD TO WATCHLIST, or play the focused episode tile |
+| Playing | Menu | show / hide the controls |
+| | Select | take the SKIP INTRO / CREDITS prompt, otherwise pause and show the controls |
+| | Left / Right | seek -10 s / +10 s |
+| | Up / Down | volume (the app's own, with an on-screen bar) |
+| | Back | stop and return |
+| Manga reader | Left / Right | turn the page (the way the book reads; right-to-left by default) |
+| | Up / Down | scroll a long strip, or turn the page |
+| | Rewind / Fast-forward | previous / next chapter |
+| | Menu | flip the reading direction |
+
+Easter egg: **Up Up Down Down Left Right Left Right** sends an anime cat bouncing around the screen like the old DVD
+logo (it also wanders in by itself after 30 seconds of doing nothing, and one time in thirty it is a Nyan Cat).
+
+### Notes and limits
+
+- **Volume +/- on the remote** belong to Fire OS: it hands them to your TV or soundbar over HDMI-CEC and apps never see
+  them. Use Up / Down while a video plays for the app's own volume.
+- **Playback** uses Android's built-in player (H.264 / HLS), not mpv. Subtitles (WebVTT / SRT) are drawn by the app.
+- **Skip intro / credits** use timestamps from the stream, from chapter marks or from the crowd-sourced
+  [AniSkip](https://aniskip.com/) database; the button only shows while an intro or credits scene is really on screen.
+  The intro switch is one-shot (skips the next episode's intro once); the credits switch applies to every episode.
+- **Performance:** the TV build renders at 720p internally with light anti-aliasing and the plain grid floor, which holds
+  60 fps on a Fire TV Stick 4K Max. Tweak without rebuilding:
+  `adb shell setprop debug.anic3d.scale 0.75` (render scale), `.msaa 0|2|4`, `.ui 1.3` (interface size), then relaunch.
+- **Themes** work as on the desktop; the TV keeps the creatures and props in the background and drops the static
+  scenery so every theme stays smooth. The CRT television only floats in the sparse themes.
+- The first run opens on **Currently Watching**; on a fresh install with no history it shows what is popular.
+
+### Building the APK
+
+The Android toolchain (NDK, SDK build-tools, a JDK and the native libraries cross-built for arm64-v8a / armeabi-v7a)
+lives in a second container image:
+
+```sh
+podman build -t ani-c3d-android -f tools/Containerfile.android tools
+mkdir -p build/android/deps build/android/src
+for abi in arm64-v8a armeabi-v7a; do         # once: curl, OpenSSL, PCRE2, libwebp, SQLite, SDL2 for each ABI
+  podman run --rm -v "$PWD:/work:Z" -e SRC_CACHE=/work/build/android/src ani-c3d-android \
+      /work/tools/android/build_deps.sh $abi /work/build/android/deps/$abi
+done
+podman run --rm -v "$PWD:/work:Z" ani-c3d-android /work/tools/android/build_apk.sh
+# -> dist/ani-c3d-firetv.apk (debug-signed, both ABIs; the stick uses armeabi-v7a)
+```
+
+The APK is signed with a debug key kept at `build/android/debug.keystore` - back it up, or a rebuilt APK will not install
+over an installed one without uninstalling first. Set `ABIS=arm64-v8a` to build one ABI only. The TV dashboard can also
+be tried on a desktop with `ANIC3D_TV=1 ./ani-c3d` (and a GLES-only build with `-DANI_GLES=ON`).
+
 ## First steps
 
 - The app opens on **HOME**: shows to continue watching, recommendations and what's popular. Click a poster to open it,
@@ -60,8 +150,9 @@ settings (theme, reading direction, skip switches, recent librarian searches).
 ## Themes
 
 Classic FSN, Jurassic Park (a herd of dinosaurs you can feed and follow), Enchanted Forest (frogs, ladybugs, beetles and
-butterflies), Sakura Garden, Halloween (a haunted graveyard), Matrix, Retro Arcade and Old VCR. Press **T** to switch;
-the choice is remembered.
+butterflies), Sakura Garden, Halloween (a haunted graveyard), Matrix (falling digits), Retro Arcade (a striped synthwave
+sun), Old VCR (floating VHS tapes, cassettes, Walkmans and Macintoshes) and **Media Center 2005** (Windows XP Media
+Center blues with butterflies). Press **T** to switch; the choice is remembered.
 
 ## Arcade
 
