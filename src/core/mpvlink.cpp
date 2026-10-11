@@ -1,4 +1,5 @@
 #include "mpvlink.hpp"
+#ifndef __ANDROID__
 
 #include <chrono>
 #include <thread>
@@ -233,3 +234,4 @@ void Link::send(const std::string& s) {
 }
 #endif
 }  // namespace mpvlink
+#endif  // !__ANDROID__

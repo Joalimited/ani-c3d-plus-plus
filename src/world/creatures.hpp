@@ -19,6 +19,7 @@ struct World {
     std::vector<std::array<double, 4>> rects;    // cx, cz, half w, half d
     std::pair<double, double> bounds{30, 90};
     bool has_platforms = false;
+    double z_clip = 1e30;  // ambience props / particles are only built behind this z (the TV dashboard keeps them behind the menus)
     std::vector<std::array<double, 4>> platforms;  // forest: where section platforms stand (cx, cz, hw, hd)
 };
 

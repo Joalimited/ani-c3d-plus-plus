@@ -96,8 +96,10 @@ std::vector<Part> rig_skeleton(const Beast& d, double t, const St& st) {
     for (int sz : {-1, 1}) {
         double s = std::sin(ph + k * PI) * 0.7 * mv;
         V3 kn = seg(P, 0, hy, sz * 0.3, 1.15, -PI / 2 + s, 0.26, 0.26, BONE);
-        seg(P, kn.x, kn.y, kn.z, 1.15, -PI / 2 - std::max(0.0, -s) * 0.9, 0.22, 0.22, BONE);
-        P.push_back({kn.x + 0.25, 0.1, kn.z, 0.6, 0.18, 0.28, BONE, 0.2, 0, 0, 0});
+        V3 an = seg(P, kn.x, kn.y, kn.z, 1.15, -PI / 2 - std::max(0.0, -s) * 0.9, 0.22, 0.22, BONE);
+        double fy = std::max(0.09, an.y);  // the foot hangs from the ankle (and rests on the ground when the leg is planted)
+        P.push_back({an.x + 0.22, fy, an.z, 0.62, 0.17, 0.3, BONE, 0.2, 0, 0, 0});
+        P.push_back({an.x + 0.02, fy + 0.12, an.z, 0.2, 0.2, 0.2, BONE, 0.2, 0, 0, 0});  // the ankle joint
         V3 ar = seg(P, 0, hy + 1.65, sz * 0.62, 1.0, -PI / 2 - s * 0.9, 0.2, 0.2, BONE);
         seg(P, ar.x, ar.y, ar.z, 0.9, -PI / 2 - s * 0.9 + 0.3, 0.17, 0.17, BONE);
         k++;
@@ -134,8 +136,8 @@ std::vector<Part> rig_zombie(const Beast& d, double t, const St& st) {
     for (int sz : {-1, 1}) {
         double s = std::sin(ph * 0.8 + k * PI) * 0.5 * mv;
         V3 kn = seg(P, 0, hy, sz * 0.32, 1.2, -PI / 2 + s, 0.4, 0.4, pants);
-        seg(P, kn.x, kn.y, kn.z, 1.15, -PI / 2 - std::max(0.0, -s) * 0.6, 0.36, 0.36, pants);
-        P.push_back({kn.x + 0.2, 0.1, kn.z, 0.7, 0.2, 0.38, {0.1, 0.08, 0.06}, 0.1, 0, 0, 0});
+        V3 an = seg(P, kn.x, kn.y, kn.z, 1.15, -PI / 2 - std::max(0.0, -s) * 0.6, 0.36, 0.36, pants);
+        P.push_back({an.x + 0.2, std::max(0.1, an.y), an.z, 0.7, 0.2, 0.38, {0.1, 0.08, 0.06}, 0.1, 0, 0, 0});
         V3 ar = seg(P, 0.15, hy + 1.8, sz * 0.75, 1.0, 0.05 + 0.1 * std::sin(t * 2 + k), 0.3, 0.3, GREEN);  // arms stretched out
         seg(P, ar.x, ar.y, ar.z, 0.9, 0.0 + 0.1 * std::sin(t * 2.4 + k), 0.26, 0.26, GREEN);
         k++;

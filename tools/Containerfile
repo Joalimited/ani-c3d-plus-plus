@@ -39,3 +39,4 @@ RUN mkdir -p /tmp/mesa && cd /tmp/mesa \
     && curl -fsSLo m.7z https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-mingw.7z \
     && (7z x -y m.7z x64 >/dev/null || 7za x -y m.7z x64 >/dev/null) \
     && cd x64 && ls && zip -9 /opt/mesa.zip opengl32.dll libgallium_wgl.dll $(ls libglapi.dll 2>/dev/null) && cd / && rm -rf /tmp/mesa && ls -la /opt/mesa.zip
+RUN dnf -y install --setopt=install_weak_deps=False --skip-unavailable libglvnd-devel mesa-libGLES-devel && dnf clean all

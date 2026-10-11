@@ -64,6 +64,13 @@ static std::vector<Theme> build() {
            {0.85, 0.88, 0.98}, {1.0, 0.92, 0.45}, {0.04, 0.04, 0.09, 0.86}, {0.7, 0.72, 0.95, 0.9}, {0.9, 0.93, 1.0}, {0.55, 0.58, 0.72},
            {1.0, 0.88, 0.25}, {0.45, 0.95, 0.55}, {0.95, 0.95, 1.0}, {0.18, 0.15, 0.13},
            {{0.75, 0.2, 0.2}, {0.25, 0.35, 0.7}, {0.8, 0.7, 0.25}, {0.3, 0.6, 0.4}, {0.55, 0.55, 0.6}}, "vcr"),
+        // Windows XP Media Center Edition 2005: deep royal blue, glossy glass, the bright green start orb, butterflies
+        mk("mce", "MEDIA CENTER 2005", {0.01, 0.05, 0.22}, 0.0058f, {0.0, 0.025, 0.13}, {0.03, 0.22, 0.55}, {0.25, 0.65, 1.0}, {0.0, 0.1, 0.3}, 0,
+           {0.05, 0.18, 0.5}, {0.45, 0.9, 0.25}, {0.06, 0.22, 0.55}, {0.15, 0.45, 0.9}, {0.45, 0.9, 0.25}, {0.2, 0.35, 0.55}, {0.3, 0.8, 1.0},
+           {0.7, 1.0, 0.5}, {0.03, 0.1, 0.3}, {0.1, 0.4, 0.85}, {0.2, 0.65, 0.35}, {0.55, 0.95, 0.3}, {0.4, 0.85, 1.0}, {0.75, 0.95, 1.0},
+           {0.7, 0.9, 1.0}, {0.8, 1.0, 0.7}, {0.01, 0.05, 0.2, 0.85}, {0.3, 0.7, 1.0, 0.9}, {0.92, 0.97, 1.0}, {0.55, 0.72, 0.92}, {0.5, 0.92, 0.3},
+           {0.5, 1.0, 0.4}, {0.6, 0.95, 0.4}, {0.08, 0.15, 0.3},
+           {{0.1, 0.4, 0.85}, {0.35, 0.8, 0.25}, {0.15, 0.6, 0.9}, {0.95, 0.5, 0.1}, {0.7, 0.9, 1.0}}, "mce"),
     };
 }
 
@@ -124,6 +131,11 @@ void save_settings(const nlohmann::json& changes) {
     paths::makedirs(paths::config_dir());
     paths::write_file(settings_path(), data.dump());
 }
+#ifdef __ANDROID__
+// the TV dashboard looks best in the green-on-black theme (the original Xbox dashboard's palette) until the user picks another
+std::string load_theme() { return load_settings().value("theme", "matrix"); }
+#else
 std::string load_theme() { return load_settings().value("theme", "fsn"); }
+#endif
 void save_theme(const std::string& key) { save_settings({{"theme", key}}); }
 }  // namespace themes

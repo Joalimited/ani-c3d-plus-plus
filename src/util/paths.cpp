@@ -153,6 +153,9 @@ static std::string which(const std::string& name) {
 }
 
 std::string find_mpv() {
+#ifdef __ANDROID__
+    return "android-player";  // MediaPlayer inside the app (core/mpvlink_android.cpp)
+#endif
     std::string found = which("mpv");
     if (!found.empty()) return found;
     std::string local = join(join(data_dir(), "mpv"), WINDOWS ? "mpv.exe" : "mpv");
@@ -180,6 +183,9 @@ bool unzip_to(const std::string& zip, const std::string& target) {
 }
 
 std::string ensure_mpv() {
+#ifdef __ANDROID__
+    return "android-player";
+#endif
     std::string path = find_mpv();
     std::string local = join(data_dir(), "mpv");
     if (!path.empty()) {

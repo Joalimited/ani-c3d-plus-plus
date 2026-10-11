@@ -1,4 +1,5 @@
 #include "scene.hpp"
+#include "props.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -210,7 +211,13 @@ void Scene::build(Renderer& r, TextCache& text, double t, const Hit& hover, cons
     double bob = 0.15 * std::sin(t * 1.4);
     double rg = hover.kind == "root" ? 0.8 : 0.15;
     boxes.push_back(box(0, 0.3, 0, 8, 0.6, 8, th.root, rg));
-    boxes.push_back(box(0, 1.9 + bob, 0, 1.7, 2.6, 1.7, th.core, 0.5 + 0.2 * std::sin(t * 2), t * 0.4));
+    if (props::crt_theme(th.fx)) {  // a CRT television floating around the root pedestal (sparse themes only), facing you most of the time
+        auto tv = props::crt_tv(t, th.core, 0.85);
+        props::tilt(tv, 0.08 * std::sin(t * 0.9), 0.06 * std::sin(t * 0.7 + 1));
+        place(boxes, tv, 2.4 * std::sin(t * 0.45), 1.2 + bob + 0.4 * std::sin(t * 0.8), 1.8 * std::sin(t * 0.31 + 1.0), props::crt_heading(t), 1.0, 1.0);
+    } else {
+        boxes.push_back(box(0, 1.9 + bob, 0, 1.7, 2.6, 1.7, th.core, 0.5 + 0.2 * std::sin(t * 2), t * 0.4));  // the busy themes keep their core
+    }
     pickable(-4, 0, -4, 4, 3.5, 4, {"root"});
     label(r, text, heading, {0, 0.04, 5.3}, 1.1, th.t_root, true);
 

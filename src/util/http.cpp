@@ -1,4 +1,6 @@
 #include "http.hpp"
+#include "paths.hpp"
+#include "resources.hpp"
 
 #include <curl/curl.h>
 
@@ -89,6 +91,21 @@ Resp request(const Req& r) {
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &sink);
     curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, header_cb);
     curl_easy_setopt(c, CURLOPT_HEADERDATA, &out.headers);
+#ifdef __ANDROID__
+    {  // Mozilla's CA bundle from the APK (the device's own store is old on a Fire Stick and OpenSSL rejects some chains)
+        static std::string ca = [] {
+            std::string pem, out = paths::join(paths::cache_dir(), "cacert.pem");
+            if (res::get("cacert.pem", pem)) {
+                paths::makedirs(paths::cache_dir());
+                paths::write_file(out, pem);
+                return out;
+            }
+            return std::string();
+        }();
+        if (!ca.empty()) curl_easy_setopt(c, CURLOPT_CAINFO, ca.c_str());
+        else curl_easy_setopt(c, CURLOPT_CAPATH, "/system/etc/security/cacerts");
+    }
+#endif
 #ifdef _WIN32
     curl_easy_setopt(c, CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_NATIVE_CA);  // OpenSSL, trusting the Windows certificate store
 #endif

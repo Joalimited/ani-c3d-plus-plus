@@ -41,6 +41,11 @@ private:
     bool autofs_ = false;
     std::map<std::string, bool> autoskip_ = {{"intro", false}, {"outro", false}};
     std::set<std::pair<std::string, std::string>> skipped_;
+    std::string outro_armed_ep_;  // same for the credits switch
+    std::string last_state_;
+    double state_at_ = 0;
+    void push_state();
+    std::string intro_armed_ep_;  // the episode the intro switch was pressed on (its own intro is skipped by the button, not the switch)
     std::map<std::string, std::pair<double, double>> skip_;
     std::string poster_, source_, late_sub_;
     double resume_at_ = 0;

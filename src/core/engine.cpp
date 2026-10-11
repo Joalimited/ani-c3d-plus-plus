@@ -54,32 +54,132 @@ json Engine::snapshot() {
             {"autoskip", {{"intro", autoskip_["intro"]}, {"outro", autoskip_["outro"]}}}};
 }
 
-static const char* const SKIP_LUA = R"LUA(-- ani-c3d: an on-screen SKIP INTRO / SKIP CREDITS button inside the mpv window (written by the app at each playback)
+static const char* const SKIP_LUA = R"LUA(-- ani-c3d: the media menu + the SKIP INTRO / SKIP CREDITS button inside the mpv window (written by the app at each playback)
+-- Everything mpv can do itself (pause, seek, volume ...) is done here; the rest goes to the app's engine as `anic3d-ctl`.
 local ia, ib, oa, ob = -1, -1, -1, -1
 local pos, dur = 0, 0
-local overlay = mp.create_osd_overlay("ass-events")
-overlay.res_x, overlay.res_y = 1280, 720
-local X0, Y0, X1, Y1 = 1000, 590, 1250, 650   -- the button, in 1280x720 overlay coordinates
+local st = {pause = false, volume = 100, mute = false, speed = 1, subs = true, fs = false}
+local eng = {mode = "sub", intro = false, outro = false, autonext = true, autofs = false}
+local title = ""
+local skip_ov = mp.create_osd_overlay("ass-events")
+local menu_ov = mp.create_osd_overlay("ass-events")
+skip_ov.res_x, skip_ov.res_y = 1280, 720
+menu_ov.res_x, menu_ov.res_y = 1280, 720
+local menu_until, menu_on = 0, false
 local shown, which, bound = nil, nil, false
+local hits = {}   -- the menu's click targets, in 1280x720 coordinates: {x0, y0, x1, y1, fn}
+local sx0, sy0, sx1, sy1 = 1000, 590, 1250, 650   -- the skip button (moves up while the menu is open)
 
-local function mouse_in()
+local function mouse_xy()
     local mx, my = mp.get_mouse_pos()
     local w, h = mp.get_osd_size()
-    if not w or w <= 0 then return false end
-    mx, my = mx * 1280 / w, my * 720 / h
-    return mx >= X0 and mx <= X1 and my >= Y0 and my <= Y1
+    if not w or w <= 0 then return -1, -1 end
+    return mx * 1280 / w, my * 720 / h
 end
+
+local function ctl(...) mp.commandv("script-message", "anic3d-ctl", ...) end
 
 local function click(t)
     if t.event ~= "up" then return end
-    if shown and mouse_in() then
+    local mx, my = mouse_xy()
+    if shown and mx >= sx0 and mx <= sx1 and my >= sy0 and my <= sy1 then
         mp.commandv("script-message", "anic3d-skip", which)
-    else
-        mp.commandv("cycle", "pause")   -- not on the button: the default click-to-pause
+        return
     end
+    if menu_on then
+        for _, h in ipairs(hits) do
+            if mx >= h[1] and mx <= h[3] and my >= h[2] and my <= h[4] then
+                h[5](mx)
+                menu_until = mp.get_time() + 3
+                return
+            end
+        end
+        if my >= 540 then return end   -- the bar itself: nothing
+    end
+    mp.commandv("cycle", "pause")   -- not on a button: the default click-to-pause
+end
+
+local function clean(s) return (tostring(s):gsub("[{}\\]", "")) end
+local function fmt(s)
+    s = math.max(0, math.floor(s or 0))
+    return string.format("%02d:%02d", math.floor(s / 60), s % 60)
+end
+
+local function rect(parts, x0, y0, x1, y1, col, alpha)
+    parts[#parts + 1] = string.format("{\\an7\\pos(0,0)\\1c&H%s&\\1a&H%s&\\bord0\\p1}m %d %d l %d %d %d %d %d %d{\\p0}",
+        col, alpha, x0, y0, x1, y0, x1, y1, x0, y1)
+end
+
+local function draw_menu(mx, my)
+    hits = {}
+    local p = {}
+    rect(p, 0, 540, 1280, 720, "000000", "30")
+    p[#p + 1] = string.format("{\\an4\\pos(24,560)\\1c&HFFFFFF&\\bord0\\fs22\\b1}%s  [%s]", clean(title), string.upper(eng.mode))
+    p[#p + 1] = string.format("{\\an6\\pos(1256,560)\\1c&HFFFFFF&\\bord0\\fs22}%s / %s", fmt(pos), fmt(dur))
+    -- seek bar
+    rect(p, 24, 580, 1256, 592, "505050", "00")
+    if dur > 0 then rect(p, 24, 580, 24 + 1232 * math.min(1, pos / dur), 592, "FFFFFF", "00") end
+    hits[#hits + 1] = {24, 570, 1256, 602, function(x)
+        mp.commandv("seek", tostring(math.max(0, math.min(100, (x - 24) / 1232 * 100))), "absolute-percent")
+    end}
+    local function row(y, items)
+        local x = 24
+        for _, it in ipairs(items) do
+            local w = #it[1] * 13 + 28
+            local hot = mx >= x and mx <= x + w and my >= y and my <= y + 40
+            local fill = it[3] and "FFFFFF" or (hot and "A0A0A0" or "303030")
+            local text = (it[3] or hot) and "000000" or "FFFFFF"
+            rect(p, x, y, x + w, y + 40, fill, "10")
+            p[#p + 1] = string.format("{\\an5\\pos(%d,%d)\\1c&H%s&\\bord0\\fs20\\b1}%s", x + w / 2, y + 20, text, it[1])
+            hits[#hits + 1] = {x, y, x + w, y + 40, it[2]}
+            x = x + w + 8
+        end
+    end
+    row(606, {
+        {"<< PREV", function() ctl("prev") end},
+        {"-10s", function() mp.commandv("seek", "-10", "relative") end},
+        {st.pause and "PLAY" or "PAUSE", function() mp.commandv("cycle", "pause") end, st.pause},
+        {"+10s", function() mp.commandv("seek", "10", "relative") end},
+        {"NEXT >>", function() ctl("next") end},
+        {"STOP", function() ctl("stop") end},
+        {"MUTE", function() mp.commandv("cycle", "mute") end, st.mute},
+        {string.format("%gx", st.speed), function()
+            local s = st.speed
+            local n = s == 0.75 and 1.0 or s == 1.0 and 1.25 or s == 1.25 and 1.5 or s == 1.5 and 2.0 or 0.75
+            mp.commandv("set", "speed", tostring(n))
+        end},
+    })
+    row(656, {
+        {"AUTO INTRO", function() ctl("toggle_autoskip", "intro") end, eng.intro},
+        {"AUTO CREDITS", function() ctl("toggle_autoskip", "outro") end, eng.outro},
+        {string.upper(eng.mode), function() ctl("mode") end, eng.mode == "dub"},
+        {"SUBS", function() mp.commandv("cycle", "sub-visibility") end, st.subs},
+        {"AUTO-NEXT", function() ctl("toggle_autonext") end, eng.autonext},
+        {"FULLSCREEN", function() mp.commandv("cycle", "fullscreen") end, st.fs},
+        {"AUTO FS", function() ctl("toggle_autofs") end, eng.autofs},
+    })
+    -- volume (0-130)
+    p[#p + 1] = "{\\an4\\pos(1030,626)\\1c&HFFFFFF&\\bord0\\fs20\\b1}VOL"
+    rect(p, 1080, 620, 1256, 632, "505050", "00")
+    rect(p, 1080, 620, 1080 + 176 * math.min(1, st.volume / 130), 632, "FFFFFF", "00")
+    hits[#hits + 1] = {1070, 606, 1256, 646, function(x)
+        mp.commandv("set", "volume", tostring(math.floor(math.max(0, math.min(130, (x - 1080) / 176 * 130)))))
+    end}
+    menu_ov.data = table.concat(p, "\n")
+    menu_ov:update()
 end
 
 local function draw()
+    local mx, my = mouse_xy()
+    local want_menu = st.pause or mp.get_time() < menu_until
+    if want_menu then
+        menu_on = true
+        draw_menu(mx, my)
+    elseif menu_on then
+        menu_on = false
+        hits = {}
+        menu_ov:remove()
+    end
     local want, label = nil, nil
     -- only where the intro / credits really are (stream timestamps, chapters or the AniSkip database)
     if ia >= 0 and ib > ia and pos >= ia - 1 and pos < ib - 1 then want, label = "intro", "SKIP INTRO" end
@@ -87,30 +187,53 @@ local function draw()
     if not want then
         if shown then
             shown = nil
-            overlay:remove()
-            if bound then mp.remove_key_binding("anic3d-click") bound = false end
+            skip_ov:remove()
         end
-        return
+    else
+        which = want
+        shown = want
+        sy0, sy1 = menu_on and 470 or 590, menu_on and 530 or 650
+        local hot = mx >= sx0 and mx <= sx1 and my >= sy0 and my <= sy1
+        local fill = hot and "FFFFFF" or "202020"
+        local text = hot and "000000" or "FFFFFF"
+        skip_ov.data = string.format(
+            "{\\an7\\pos(0,0)\\1c&H%s&\\1a&H20&\\3c&HFFFFFF&\\bord2\\p1}m %d %d l %d %d %d %d %d %d{\\p0}\n" ..
+            "{\\an5\\pos(%d,%d)\\1c&H%s&\\bord0\\fs30\\b1}%s  >>",
+            fill, sx0, sy0, sx1, sy0, sx1, sy1, sx0, sy1, (sx0 + sx1) / 2, (sy0 + sy1) / 2, text, label)
+        skip_ov:update()
     end
-    which = want
-    shown = want
-    if not bound then mp.add_forced_key_binding("MBTN_LEFT", "anic3d-click", click, {complex = true}) bound = true end
-    local hot = mouse_in()
-    local fill = hot and "FFFFFF" or "202020"
-    local text = hot and "000000" or "FFFFFF"
-    overlay.data = string.format(
-        "{\\an7\\pos(0,0)\\1c&H%s&\\1a&H20&\\3c&HFFFFFF&\\bord2\\p1}m %d %d l %d %d %d %d %d %d{\\p0}\n" ..
-        "{\\an5\\pos(%d,%d)\\1c&H%s&\\bord0\\fs30\\b1}%s  >>",
-        fill, X0, Y0, X1, Y0, X1, Y1, X0, Y1, (X0 + X1) / 2, (Y0 + Y1) / 2, text, label)
-    overlay:update()
+    local need = shown ~= nil or menu_on
+    if need and not bound then
+        mp.add_forced_key_binding("MBTN_LEFT", "anic3d-click", click, {complex = true})
+        bound = true
+    elseif not need and bound then
+        mp.remove_key_binding("anic3d-click")
+        bound = false
+    end
 end
 
 mp.observe_property("time-pos", "number", function(_, v) pos = v or 0 draw() end)
 mp.observe_property("duration", "number", function(_, v) dur = v or 0 end)
-mp.observe_property("mouse-pos", "native", function() if shown then draw() end end)
+mp.observe_property("pause", "bool", function(_, v) st.pause = v and true or false draw() end)
+mp.observe_property("volume", "number", function(_, v) st.volume = v or 100 end)
+mp.observe_property("mute", "bool", function(_, v) st.mute = v and true or false end)
+mp.observe_property("speed", "number", function(_, v) st.speed = v or 1 end)
+mp.observe_property("sub-visibility", "bool", function(_, v) st.subs = v and true or false end)
+mp.observe_property("fullscreen", "bool", function(_, v) st.fs = v and true or false end)
+mp.observe_property("media-title", "string", function(_, v) title = v or "" end)
+mp.observe_property("mouse-pos", "native", function()
+    menu_until = mp.get_time() + 3
+    draw()
+end)
+mp.add_periodic_timer(0.5, function() if menu_on then draw() end end)   -- hides the menu again after 3 s
 mp.register_script_message("anic3d-range", function(a, b, c, d)
     ia, ib, oa, ob = tonumber(a) or -1, tonumber(b) or -1, tonumber(c) or -1, tonumber(d) or -1
     draw()
+end)
+mp.register_script_message("anic3d-state", function(mode, intro, outro, autonext, autofs)
+    eng.mode, eng.intro, eng.outro = mode or "sub", intro == "1", outro == "1"
+    eng.autonext, eng.autofs = autonext == "1", autofs == "1"
+    if menu_on then draw() end
 end)
 )LUA";
 
@@ -164,7 +287,30 @@ void Engine::emit(bool force) {
         }
         last_emit_ = now;
     }
+    push_state();
     if (send) send({{"event", "player"}, {"state", snapshot()}});
+}
+
+// Tell the media menu inside mpv which of the app's switches are on (when they change, and every few seconds in case it loaded late)
+void Engine::push_state() {
+    std::shared_ptr<mpvlink::Link> l;
+    std::vector<std::string> cmd = {"script-message", "anic3d-state"};
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        l = link_;
+        if (!l) return;
+        cmd.push_back(mode_);
+        cmd.push_back(autoskip_["intro"] ? "1" : "0");
+        cmd.push_back(autoskip_["outro"] ? "1" : "0");
+        cmd.push_back(autonext_ ? "1" : "0");
+        cmd.push_back(autofs_ ? "1" : "0");
+        std::string key;
+        for (auto& c : cmd) key += c + ",";
+        if (key == last_state_ && wall() - state_at_ < 5) return;
+        last_state_ = key;
+        state_at_ = wall();
+    }
+    l->send(json({{"command", cmd}}).dump() + "\n");
 }
 
 json Engine::handle(const std::string& cmd, const json& a) {
@@ -259,9 +405,37 @@ json Engine::control(const std::string& action, const json& v) {
     else if (action == "mute") mpv({"cycle", "mute"});
     else if (action == "autoskip") {
         std::lock_guard<std::recursive_mutex> lk(mu_);
-        autoskip_["intro"] = v.is_object() && v.value("intro", false);
-        autoskip_["outro"] = v.is_object() && v.value("outro", false);
+        bool want_intro = v.is_object() && v.value("intro", false);
+        if (want_intro && !autoskip_["intro"]) intro_armed_ep_ = cur_ep_;  // armed on this episode: the next one gets its intro skipped, once
+        bool want_outro = v.is_object() && v.value("outro", false);
+        if (want_outro && !autoskip_["outro"]) outro_armed_ep_ = cur_ep_;  // pressing the switch never skips the credits that are playing now
+        autoskip_["intro"] = want_intro;
+        autoskip_["outro"] = want_outro;
         skipped_.clear();
+    } else if (action == "toggle_autoskip") {  // from the media menu inside mpv
+        {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            std::string k = v.is_string() && v.get<std::string>() == "outro" ? "outro" : "intro";
+            bool on = !autoskip_[k];
+            if (on) (k == "intro" ? intro_armed_ep_ : outro_armed_ep_) = cur_ep_;
+            autoskip_[k] = on;
+            skipped_.clear();
+        }
+        emit(true);
+    } else if (action == "toggle_autonext") {
+        {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            autonext_ = !autonext_;
+        }
+        emit(true);
+    } else if (action == "toggle_autofs") {
+        bool on;
+        {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            on = autofs_ = !autofs_;
+        }
+        if (on) mpv({"set_property", "fullscreen", true});
+        emit(true);
     } else if (action == "autofs") {
         bool on = truthy();
         bool playing;
@@ -378,6 +552,7 @@ void Engine::play(const std::string& ep, double start) {
         for (auto& x : su::split_ws(paths::getenv_or(env, ""))) args.push_back(x);
     late_sub_.clear();
     last_ranges_.clear();
+    last_state_.clear();
     if (!sub.empty() && hls) late_sub_ = sub;  // the forced hls format would also apply to --sub-file, so mpv could not read the .vtt
     else if (!sub.empty()) args.push_back("--sub-file=" + sub);
     if (start > 0) args.push_back("--start=" + std::to_string((long long)start));
@@ -474,6 +649,17 @@ void Engine::watch(std::shared_ptr<mpvlink::Proc> proc, long long token) {
                         link->send(json({{"command", {"sub-add", sub, "select"}}}).dump() + "\n");
                     }
                 }
+            } else if (ev == "client-message" && m.contains("args") && m["args"].is_array() && m["args"].size() >= 2 && m["args"].size() <= 3 &&
+                       m["args"][0] == "anic3d-ctl" && m["args"][1].is_string()) {  // the media menu inside mpv
+                std::string action = m["args"][1];
+                json val = m["args"].size() == 3 ? m["args"][2] : json(nullptr);
+                static const std::set<std::string> OK = {"prev", "next", "stop", "mode", "toggle_autoskip", "toggle_autonext", "toggle_autofs"};
+                bool current;
+                {
+                    std::lock_guard<std::recursive_mutex> lk(mu_);
+                    current = token == token_;
+                }
+                if (current && OK.count(action)) std::thread([this, action, val] { try { control(action, val); } catch (...) {} }).detach();
             } else if (ev == "client-message" && m.contains("args") && m["args"].is_array() && m["args"].size() == 2 &&
                        m["args"][0] == "anic3d-skip") {
                 std::string which = m["args"][1] == "outro" ? "skip_outro" : "skip_intro";
@@ -537,21 +723,30 @@ void Engine::auto_skip() {
         json rng = skip_ranges();
         double dur = num("duration");
         std::string ep = cur_ep_;
-        if (autoskip_["intro"] && !skipped_.count({ep, "intro"})) {
+        // the intro switch is one-shot: pressing it skips this intro now (the app does that) and it then only waits for the NEXT
+        // episode, skips that one intro and switches itself off again
+        if (autoskip_["intro"] && ep != intro_armed_ep_ && !skipped_.count({ep, "intro"})) {
+            bool fired = false;
             if (rng.contains("intro")) {
                 double a = rng["intro"][0].get<double>(), b = rng["intro"][1].get<double>();
                 if (a - 1 <= pos && pos < b - 1) {
                     skipped_.insert({ep, "intro"});
                     mpv({"seek", b, "absolute"});
-                    return;
+                    fired = true;
                 }
             } else if (2 <= pos && pos < 30) {  // no timestamps: jump a typical opening length once
                 skipped_.insert({ep, "intro"});
                 mpv({"seek", 85, "relative"});
+                fired = true;
+            }
+            if (fired) {
+                autoskip_["intro"] = false;
+                intro_armed_ep_.clear();
+                emit(true);
                 return;
             }
         }
-        if (autoskip_["outro"] && rng.contains("outro") && !skipped_.count({ep, "outro"})) {
+        if (autoskip_["outro"] && ep != outro_armed_ep_ && rng.contains("outro") && !skipped_.count({ep, "outro"})) {
             double a = rng["outro"][0].get<double>(), b = rng["outro"][1].get<double>();
             if (a - 0.5 <= pos && pos < b) {
                 skipped_.insert({ep, "outro"});

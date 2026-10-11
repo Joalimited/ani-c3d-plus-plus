@@ -1,0 +1,25 @@
+# Android / Fire TV build environment for ani-c3d: NDK + SDK build-tools, plus the C libraries cross-built for arm64-v8a
+# and armeabi-v7a (a Fire TV Stick 4K runs a 32-bit userland, newer sticks are 64-bit). Build with:
+#   podman build -t localhost/ani-c3d-android -f tools/Containerfile.android tools
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install --setopt=install_weak_deps=False --skip-unavailable \
+      java-25-openjdk-headless cmake ninja-build make perl gcc gcc-c++ git unzip zip tar xz curl pkgconf-pkg-config file which \
+      python3 patch autoconf automake libtool \
+    && dnf clean all
+ENV ANDROID_HOME=/opt/android-sdk
+RUN mkdir -p $ANDROID_HOME/cmdline-tools && cd /tmp \
+    && curl -fsSLo cl.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+    && unzip -q cl.zip -d $ANDROID_HOME/cmdline-tools && mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest && rm cl.zip
+RUN (yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true) \
+    && $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018" \
+    && test -d $ANDROID_HOME/ndk/27.2.12479018
+ENV ANDROID_NDK=/opt/android-sdk/ndk/27.2.12479018
+RUN dnf -y install --setopt=install_weak_deps=False java-25-openjdk-devel && dnf clean all
+# the Android build-tools' d8 / apksigner crash on JDK 25 (NPE in R8): use a JDK 17 for the Java side
+RUN curl -fsSL "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse" | tar xz -C /opt \
+    && ln -s /opt/jdk-17* /opt/jdk17
+ENV JAVA_HOME=/opt/jdk17
+ENV PATH=/opt/jdk17/bin:$PATH
+# emulator for headless smoke tests (needs --device /dev/kvm)
+RUN $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "emulator" "platform-tools" "system-images;android-34;google_apis;x86_64" \
+    && dnf -y install --setopt=install_weak_deps=False --skip-unavailable mesa-libGL libglvnd-gles libX11 libXext libpulse alsa-lib nss libxkbfile libdrm && dnf clean all

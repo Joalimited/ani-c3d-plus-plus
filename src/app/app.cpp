@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "../core/androidplayer.hpp"
 
 #include <cctype>
 #include <algorithm>
@@ -45,12 +46,14 @@ std::string poster_for_sync(const std::string& title, const std::string& id) {
 }  // namespace
 
 App::App(Renderer& r_, double ratio_) : r(r_), ratio(ratio_), text(r_, ratio_), tasks_(24), engine(std::make_shared<Engine>()) {
+    if (const char* tvenv = std::getenv("ANIC3D_TV")) tv_ui = tv_remote = tvenv[0] == '1';  // try the TV dashboard on a desktop
+
     gpu_label = "OPENGL";
     tasks_.on_error = [this](const std::string& e) { status = "UI error: " + e; };
     engine->send = [this](const json& ev) { tasks_.post([this, ev] { on_engine_event(ev); }); };
     json cfg = themes::load_settings();
     call("control", {{"action", "autofs"}, {"value", cfg.value("auto_fullscreen", false)}});
-    auto_intro = cfg.value("auto_skip_intro", false);
+    auto_intro = false;  // one-shot now: never remembered across launches
     auto_outro = cfg.value("auto_skip_outro", false);
     call("control", {{"action", "autoskip"}, {"value", {{"intro", auto_intro}, {"outro", auto_outro}}}});
     lib_in = TextInput("", 60);
@@ -100,6 +103,20 @@ void App::on_engine_event(const json& ev) {
     if (kind == "player") {
         player = ev["state"];
         audio = player.value("mode", audio);
+        if (player.contains("autoskip") && player["autoskip"].is_object()) {  // the one-shot intro switch clears itself in the engine
+            bool eng_intro = player["autoskip"].value("intro", false);
+            if (auto_intro && !eng_intro) status = "Intro skipped - the switch is off again";
+            auto_intro = eng_intro;
+            bool eng_outro = player["autoskip"].value("outro", false);  // the media menu inside mpv can flip these too
+            if (eng_outro != auto_outro) {
+                auto_outro = eng_outro;
+                themes::save_settings({{"auto_skip_outro", auto_outro}});
+            }
+        }
+        if (player.contains("autofs") && player["autofs"].is_boolean() && player["autofs"].get<bool>() != auto_fs) {
+            auto_fs = player["autofs"].get<bool>();
+            themes::save_settings({{"auto_fullscreen", auto_fs}});
+        }
     } else if (kind == "watched") {
         std::string aid = S(ev, "anime_id");
         std::vector<std::string> eps;
@@ -472,16 +489,16 @@ void App::play(const std::string& ep, double start) {
          });
 }
 
-// SKIP INTRO / SKIP CREDITS: switches automatic skipping for every episode, and skips right now when turning on
+// AUTO INTRO / AUTO CREDITS only remember to skip (they never jump ahead when pressed; the SKIP buttons do that).
+// Intro: the NEXT episode's intro is skipped once, then the switch turns itself off. Credits: every following episode.
 void App::toggle_skip(const std::string& kind) {
     bool on;
     if (kind == "intro") on = auto_intro = !auto_intro;
     else on = auto_outro = !auto_outro;
-    themes::save_settings({{"auto_skip_intro", auto_intro}, {"auto_skip_outro", auto_outro}});
+    themes::save_settings({{"auto_skip_outro", auto_outro}});
     control("autoskip", {{"intro", auto_intro}, {"outro", auto_outro}});
-    if (on && player.value("playing", false)) control(kind == "intro" ? "skip_intro" : "skip_outro");
-    std::string what = kind == "intro" ? "intro" : "credits";
-    status = on ? "Auto-skip " + what + ": ON for every episode (click again to turn off)" : "Auto-skip " + what + ": off";
+    if (kind == "intro") status = on ? "Auto intro ON: the next episode's intro will be skipped (once)" : "Auto intro: off";
+    else status = on ? "Auto credits ON: credits are skipped from the next episode on (click again to turn off)" : "Auto credits: off";
 }
 
 void App::toggle_autofs() {
@@ -1117,6 +1134,7 @@ void App::home() {
 // ---------------------------------------------------------------- input
 void App::on_pointer_move(double x, double y) {
     mouse = {x, y};
+    last_input = t;
     if (down && !buttons_held.empty()) {
         double dx = x - down->first, dy = y - down->second;
         if (dragged || std::hypot(dx, dy) > 5) {
@@ -1142,6 +1160,7 @@ void App::on_pointer_move(double x, double y) {
 }
 
 void App::on_pointer_down(double x, double y, int button) {
+    last_input = t;
     buttons_held.insert(button);
     down = std::make_pair(x, y);
     last_drag = *down;
@@ -1162,6 +1181,7 @@ void App::on_pointer_up(double x, double y, int button) {
 }
 
 void App::on_wheel(double dy) {
+    last_input = t;
     if (adv_open) adv_scroll = std::max(0.0, adv_scroll + (dy > 0 ? 60 : -60));
     else if (mode == "library" && lib && lib->drawer && !lib->pick && mouse.first < 340) lib->drawer_scroll += dy > 0 ? 1 : -1;
     else if (mode == "library" && lib && lib->pick) lib->zoom_by(dy);  // zoom the open book
@@ -1183,6 +1203,25 @@ void App::on_char(const std::string& c) {
 
 void App::on_key_down(const std::string& key, const std::set<std::string>& mods_) {
     mods = mods_;
+    last_input = t;
+    {
+        static const char* SEQ[] = {"ArrowUp", "ArrowUp", "ArrowDown", "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowLeft", "ArrowRight"};
+        egg_keys.push_back(key);
+        while (egg_keys.size() > 8) egg_keys.pop_front();
+        if (egg_keys.size() == 8) {
+            bool all = true;
+            for (size_t i = 0; i < 8; i++) all = all && egg_keys[i] == SEQ[i];
+            if (all) {
+                egg_on = !egg_on;
+                egg_auto = false;
+                egg_nyan = (std::rand() % 30) == 0;
+                egg_start = t;
+                egg_keys.clear();
+                egg_corners = 0;
+                status = egg_on ? "~ nya ~  (press the code again to send it home)" : "the cat went home";
+            }
+        }
+    }
     keys.insert(key);
     pressed.insert(key);
     on_key(key);
@@ -1215,6 +1254,7 @@ void App::on_key(const std::string& key) {
         else if (key == "ArrowUp" || key == "PageUp") adv_scroll = std::max(0.0, adv_scroll - 120);
         return;
     }
+    if (tv_ui && mode == "world" && !video_on && !typing && !arcade_menu && tv_key(key)) return;  // the TV layout's D-pad focus
     if (key == "h" && !typing) {
         show_history();  // from anywhere: library, games, an open book...
         return;
@@ -1248,7 +1288,11 @@ void App::on_key(const std::string& key) {
             else {
                 typing = false;
                 suggest.clear();
-                search();
+                if (tv_ui && tv_manga) mg_search(q_in.text());  // SEARCH on the manga dashboard looks up manga
+                else {
+                    tv_manga = false;
+                    search();
+                }
             }
         } else if (key == "Tab" && !suggest.empty()) {  // complete with the highlighted (or first) suggestion without searching yet
             q_in.set(suggest[std::max(sugg_sel, 0)]);
@@ -1298,6 +1342,11 @@ void App::click(double x, double y) {
         }
     }
     typing = false;
+    if (video_on) {  // a click on the picture: pause / resume, and bring the controls up
+        control("pause");
+        hud_until = t + 5;
+        return;
+    }
     if (mode == "library" && lib) {
         if (hide_ui && lib->pick && lib->bv && lib->pick->u >= 2.85 && (x < size.first * 0.14 || x > size.first * 0.86)) {
             lib->bv->go(x < size.first / 2 ? lib->bv->left_delta() : -lib->bv->left_delta());  // click the screen edges to turn pages
@@ -1344,7 +1393,10 @@ void App::frame(int target_fbo, int phys_w, int phys_h, double ratio_, double dt
     t += dt;
     dt_last = dt;
     pump();
-    if (!home_started && mode == "world") show_home();  // first frame: the world opens on HOME unless a search ran already
+    if (!home_started && mode == "world") {  // first frame: the world opens on HOME (the TV opens on what you are watching)
+        if (tv_ui) show_watching();
+        else show_home();
+    }
     drain_uploads();
     r.resize(phys_w, phys_h);
     Camera& cam = scene.cam;
@@ -1384,7 +1436,13 @@ void App::frame(int target_fbo, int phys_w, int phys_h, double ratio_, double dt
     }
     M4 proj = mx::perspective(55 * PI / 180, W / H, 0.1, 1200);
     bool focus = reading_focus();
-    r.set_camera(mx::look_at(view_eye, cam.target), proj, view_eye, t, W, H, *theme_, focus ? 0.0 : effects::flash(*theme_, t));
+    V3 look_at = cam.target;
+    r.set_floor_override(tv_ui && mode == "world" ? 0 : -1);
+    if (tv_ui && mode == "world") {  // the TV dashboard has its own fixed camera, level with the middle of the scene
+        view_eye = V3(0, 9, 26);
+        look_at = V3(0, 9, 0);
+    }
+    r.set_camera(mx::look_at(view_eye, look_at), proj, view_eye, t, W, H, *theme_, focus ? 0.0 : effects::flash(*theme_, t));
     if (mode == "library" && lib) lib->ray = mouse_ray();
     if (mode == "world" && !over_hits()) {
         auto [o, d] = mouse_ray();
@@ -1397,14 +1455,48 @@ void App::frame(int target_fbo, int phys_w, int phys_h, double ratio_, double dt
         auto [o, d] = mouse_ray();
         dino_hover = hd.pick(o, d);
     }
-    if (mode == "world") scene.build(r, text, t, hover, player, eye, *theme_);
+    bool tv_world = tv_ui && mode == "world";  // the TV dashboard (dash.cpp) replaces the pedestal world
+    bool flat_ui = tv_world && !video_on && !mg_reading;
+    if (tv_world) {
+        scene.pick_boxes.clear();
+        if (flat_ui) dash_build();
+    } else if (mode == "world") {
+        scene.build(r, text, t, hover, player, eye, *theme_);
+    }
     else if (game) r.add_boxes(game->build(r, text, *theme_, t));
     else if (lib) r.add_boxes(lib->build(r, text, *theme_, t));
     if (mode != "library") pressed.clear();
     size_t n_q3d = r.q3d.size();
     World world = roam_world();
     double fl;
-    std::vector<Box> fx = effects::build(*theme_, r, text, t, eye, &world, fl);
+    std::vector<Box> fx;
+    fl = 0;
+    if (flat_ui) {
+        // the theme's creatures and props as ambience in the back of the dashboard: they roam only behind the menu plane
+        // (a blocked rectangle in front of it keeps the walkers away, z_clip keeps particles and flyers out), and the static
+        // scenery the themes push straight into the renderer is dropped - the Stick has no budget for forests
+        World back;
+        back.bounds = {10, 60};
+        back.rects.push_back({0.0, 40.0, 400.0, 50.0});  // z from -10 to 90 is off limits
+        back.z_clip = -6.0;
+        n_q3d = r.q3d.size();
+        size_t nb = r.boxes.size();
+        fx = effects::build(*theme_, r, text, t, V3(0, 9, 26), &back, fl);
+        if (r.boxes.size() > nb) r.boxes.resize(nb);
+        const size_t CAP = 1100;  // confetti first, then the smallest parts
+        auto big = [](const Box& b) { return std::max({b.v[4], b.v[5], b.v[6]}); };
+        if (fx.size() > CAP) {
+            fx.erase(std::remove_if(fx.begin(), fx.end(), [&](const Box& b) { return big(b) < 0.32f; }), fx.end());
+            if (fx.size() > CAP) {
+                std::nth_element(fx.begin(), fx.begin() + (long)CAP, fx.end(), [&](const Box& a, const Box& b) { return big(a) > big(b); });
+                fx.resize(CAP);
+            }
+        }
+        // sprites the theme added (matrix digits...) stay: they were built with the same clip
+        fl = 0;
+    } else if (!tv_world) {
+        fx = effects::build(*theme_, r, text, t, eye, &world, fl);
+    }
     if (mode == "library" && lib) keep_clear(fx, n_q3d, eye);  // nothing that moves may come between you and the books
     r.add_boxes(fx);
     hits.clear();

@@ -11,6 +11,11 @@
 #include <thread>
 
 #include "app/app.hpp"
+#include "app/remote.hpp"
+#include "core/androidplayer.hpp"
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 #include "core/core.hpp"
 #include "core/scrape.hpp"
 #include "gfx/gl.hpp"
@@ -39,9 +44,15 @@ struct Window {
 };
 
 static bool create_gl(Window& wd, int w, int h, bool hidden) {
+#ifdef ANI_GLES
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (hidden ? SDL_WINDOW_HIDDEN : 0);
@@ -505,12 +516,35 @@ static int run_window() {
     Window w = open_window(1500, 900, false);
     SDL_GL_SetSwapInterval(1);
     Renderer r;
+    double ui = 1.0;  // UI scale: a TV is read from the couch, so the Android build draws everything bigger
+#ifdef __ANDROID__
+    {
+        // tuned for the Fire TV Stick GPUs; `adb shell setprop debug.anic3d.scale 0.67` (also .msaa, .ui) to experiment
+        auto prop = [](const char* name, double dflt) {
+            char v[PROP_VALUE_MAX] = {0};
+            return __system_property_get(name, v) > 0 ? std::atof(v) : dflt;
+        };
+        double scale = prop("debug.anic3d.scale", 0.67);
+        int msaa = (int)prop("debug.anic3d.msaa", 2);
+        ui = prop("debug.anic3d.ui", 1.3);
+        r.set_quality(scale, msaa);
+        SDL_DisableScreenSaver();  // keep the TV awake while the app is open
+    }
+#endif
     std::cout << "ani-c3d: OpenGL renderer = " << r.gpu_name << "  (ready in " << su::fmt("%.2f", since_start()) << "s)" << std::endl;
     int ww, wh, dw, dh;
     SDL_GetWindowSize(w.win, &ww, &wh);
     SDL_GL_GetDrawableSize(w.win, &dw, &dh);
-    App app(r, (double)dw / std::max(1, ww));
+    App app(r, (double)dw / std::max(1, ww) * ui);
     app.gpu_label = "OPENGL";
+#ifdef __ANDROID__
+    aplayer::init();  // the Java MediaPlayer side; its picture arrives as an external-OES texture
+    aplayer::init_surface(r.ensure_video_tex());
+#endif
+    Remote remote;
+    remote.init(app, ww / ui, wh / ui);
+    if (remote.enabled) app.typing = false;  // don't pop the on-screen keyboard open at launch
+    if (remote.enabled) SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");  // Back goes to the app, which decides (see remote.hpp)
     // text input only while a text box has focus: with it on, KDE/Wayland passes letters through its input-method path,
     // which turns a held A/D/W/S into one instant press + release, so walking with letters never worked
     bool text_on = false;
@@ -532,9 +566,9 @@ static int run_window() {
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
                 case SDL_QUIT: quit = true; break;
-                case SDL_MOUSEMOTION: app.on_pointer_move(ev.motion.x, ev.motion.y); break;
-                case SDL_MOUSEBUTTONDOWN: app.on_pointer_down(ev.button.x, ev.button.y, button_of(ev.button.button)); break;
-                case SDL_MOUSEBUTTONUP: app.on_pointer_up(ev.button.x, ev.button.y, button_of(ev.button.button)); break;
+                case SDL_MOUSEMOTION: app.on_pointer_move(ev.motion.x / ui, ev.motion.y / ui); break;
+                case SDL_MOUSEBUTTONDOWN: app.on_pointer_down(ev.button.x / ui, ev.button.y / ui, button_of(ev.button.button)); break;
+                case SDL_MOUSEBUTTONUP: app.on_pointer_up(ev.button.x / ui, ev.button.y / ui, button_of(ev.button.button)); break;
                 case SDL_MOUSEWHEEL: {
                     double dy = ev.wheel.preciseY != 0 ? ev.wheel.preciseY : ev.wheel.y;
                     app.on_wheel(-dy * 100.0);  // wheel down = positive dy, about 100 per notch (like the browser events)
@@ -545,6 +579,10 @@ static int run_window() {
                     app.on_char(ev.text.text);
                     break;
                 case SDL_KEYDOWN:
+#ifdef __ANDROID__
+                    std::cout << "ani-c3d: key scancode=" << (int)ev.key.keysym.scancode << " sym=" << ev.key.keysym.sym << std::endl;
+#endif
+                    if (remote.key(ev.key, app, (int)(ww / ui), (int)(wh / ui), quit)) break;
                     if (keylog)
                         std::cerr << "key down sym=" << ev.key.keysym.sym << " scancode=" << ev.key.keysym.scancode << " mod=" << ev.key.keysym.mod
                                   << " repeat=" << (int)ev.key.repeat << " -> '" << key_name(ev.key.keysym) << "'" << std::endl;
@@ -552,6 +590,7 @@ static int run_window() {
                     app.on_key_down(key_name(ev.key.keysym), mod_names(ev.key.keysym.mod));
                     break;
                 case SDL_KEYUP:
+                    if (remote.key(ev.key, app, (int)(ww / ui), (int)(wh / ui), quit)) break;
                     if (keylog) std::cerr << "key up   -> '" << key_name(ev.key.keysym) << "'" << std::endl;
                     app.on_key_up(key_name(ev.key.keysym));
                     break;
@@ -566,7 +605,15 @@ static int run_window() {
         last = now;
         SDL_GetWindowSize(w.win, &ww, &wh);
         SDL_GL_GetDrawableSize(w.win, &dw, &dh);
-        app.frame(0, dw, dh, (double)dw / std::max(1, ww), dt);
+        remote.update(app, dt, (int)(ww / ui), (int)(wh / ui));
+#ifdef __ANDROID__
+        {
+            aplayer::Frame vf = aplayer::frame();
+            r.set_video(vf.showing, vf.matrix, vf.w, vf.h);
+            app.video_on = r.video_on();
+        }
+#endif
+        app.frame(0, dw, dh, (double)dw / std::max(1, ww) * ui, dt);
         if (!g_shot.empty()) {
             Image im;
             im.w = r.width();
@@ -577,6 +624,14 @@ static int run_window() {
         }
         SDL_GL_SwapWindow(w.win);
         frames++;
+        if (frames % 300 == 0) {  // a frame-rate line in the log every ~5 s (adb logcat -s ani-c3d)
+            static double fps_t = 0;
+            static int fps_f = 0;
+            double nowt = since_start();
+            if (fps_t > 0) std::cout << "ani-c3d: fps=" << su::fmt("%.1f", (frames - fps_f) / (nowt - fps_t)) << " mode=" << app.mode << " boxes=" << r.last_boxes << " quads=" << r.last_quads << " theme=" << app.theme().key << std::endl;
+            fps_t = nowt;
+            fps_f = frames;
+        }
         if (frames == 1) std::cout << "ani-c3d: first frame after " << su::fmt("%.2f", since_start()) << "s" << std::endl;
         if (secs > 0) selftest_step(app, frames, now - started, secs, quit);
     }
@@ -602,7 +657,36 @@ static void report_crash(const std::string& what) {
 #endif
 }
 
+#ifdef __ANDROID__
+#include <android/log.h>
+// stdout / stderr go to logcat (adb logcat -s ani-c3d)
+class LogcatBuf : public std::streambuf {
+    std::string line_;
+
+  protected:
+    int overflow(int c) override {
+        if (c == '\n' || c == EOF) {
+            if (!line_.empty()) __android_log_write(ANDROID_LOG_INFO, "ani-c3d", line_.c_str());
+            line_.clear();
+        } else {
+            line_.push_back((char)c);
+        }
+        return c;
+    }
+};
+#endif
+
 int main(int argc, char** argv) {
+#ifdef __ANDROID__
+    static LogcatBuf logcat;
+    std::cout.rdbuf(&logcat);
+    std::cerr.rdbuf(&logcat);
+    if (const char* internal = SDL_AndroidGetInternalStoragePath()) {  // app-private storage stands in for $HOME
+        setenv("HOME", internal, 1);
+        setenv("TMPDIR", internal, 1);
+        db::WATCH_DB = paths::watch_db();  // the static initializer ran before HOME existed: it had picked /tmp, which Android won't let us write
+    }
+#endif
     paths::set_exe_dir(argc > 0 ? argv[0] : "");
     std::string logf = paths::getenv_or("ANIC3D_LOG", paths::getenv_or("ANI3D_LOG", ""));
     if (!logf.empty()) {  // send everything the app prints to a file (the Windows exe has no console)

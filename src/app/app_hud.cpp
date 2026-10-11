@@ -7,6 +7,7 @@
 #include "../util/strutil.hpp"
 #include "../world/effects.hpp"
 #include "app.hpp"
+#include "../core/androidplayer.hpp"
 
 using json = nlohmann::json;
 
@@ -44,8 +45,206 @@ void App::button(const std::string& label, double x, double y, double w, double 
 
 double App::text_w(const std::string& s, double px) const { return Font::get().text_length(s, std::max(6.0, std::round(px * text.ratio))) / text.ratio; }
 
+std::string App::skip_prompt() const {
+    if (!video_on || !player.contains("skip") || !player["skip"].is_object()) return "";
+    double pos = player.value("pos", 0.0);
+    const json& sk = player["skip"];
+    auto in = [&](const char* k) {
+        return sk.contains(k) && sk[k].is_array() && sk[k].size() == 2 && pos >= sk[k][0].get<double>() - 1 && pos < sk[k][1].get<double>() - 1;
+    };
+    return in("intro") ? "intro" : in("outro") ? "outro" : "";
+}
+
+void App::video_overlay(double W, double H) {
+    const Theme& th = *theme_;
+    double pos = player.value("pos", 0.0), dur = player.value("duration", 0.0);
+    // subtitles: white text with a dark outline, bottom centre
+    std::string sub = aplayer::subtitle(pos);
+    if (!sub.empty()) {
+        std::vector<std::string> lines = su::split(sub, "\n");
+        double px = std::max(22.0, H / 30.0), y = H - 120 - lines.size() * (px + 6);
+        for (auto& l : lines) {
+            for (auto [dx, dy] : {std::pair<double, double>{-2, 0}, {2, 0}, {0, -2}, {0, 2}}) txt(l, W / 2 + dx, y + dy, px, C3(0, 0, 0), true);
+            txt(l, W / 2, y, px, C3(1, 1, 1), true);
+            y += px + 6;
+        }
+    }
+    std::string prompt = skip_prompt();
+    if (!prompt.empty()) {
+        std::string which = prompt;
+        button(which == "intro" ? "SKIP INTRO >>" : "SKIP CREDITS >>", W - 270, H - 190, 250, 52, [this, which] { control(which == "intro" ? "skip_intro" : "skip_outro"); },
+               true);
+    }
+    if (t >= hud_until && t - last_input < 3.0 && dur > 0) {  // a slim progress line while seeking with the keys
+        r.rect(0, H - 6, W, 6, C4(0, 0, 0, 0.5));
+        r.rect(0, H - 6, W * std::min(1.0, pos / dur), 6, C4(th.accent, 0.95));
+    }
+}
+
+// the easter egg: a pixel anime cat bouncing like the old DVD logo; it changes colour when it lands in a corner. It also
+// wanders in by itself when the menu has been left alone for 30 seconds, and 1 time in 30 it is a Nyan Cat.
+void App::egg_draw(double W, double H) {
+    static const char* force = std::getenv("ANIC3D_EGG");  // "cat" / "nyan": start the egg at launch (screenshots, tests)
+    static bool forced = false;
+    if (force && !forced && t > 1.0) {
+        forced = true;
+        egg_on = true;
+        egg_auto = false;
+        egg_nyan = std::string(force) == "nyan";
+        egg_start = t;
+        egg_x = W * 0.3;
+        egg_y = H * 0.25;
+    }
+    bool quiet = !video_on && !mg_reading && !typing && !arcade_menu && !adv_open && !(mode == "game");
+    if (!egg_on && quiet && t - last_input > 30.0 && !tv_manga_reading_guard()) {
+        egg_on = true;
+        egg_auto = true;
+        egg_start = t;
+        egg_corners = 0;
+        egg_nyan = (std::rand() % 30) == 0;
+        egg_x = W * 0.3;
+        egg_y = H * 0.2;
+        egg_vx = 190;
+        egg_vy = 125;
+    }
+    if (egg_on && egg_auto && last_input > egg_start) {  // any input sends the visitor home
+        egg_on = false;
+        egg_auto = false;
+    }
+    if (!egg_on) return;
+    const double u = std::max(4.0, H / 150.0);
+    const double sw = (egg_nyan ? 36 : 24) * u, sh = (egg_nyan ? 20 : 17) * u;
+    double dt = std::min(dt_last, 0.05);
+    egg_x += egg_vx * dt;
+    egg_y += egg_vy * dt;
+    bool hit_x = false, hit_y = false;
+    if (egg_x < 0) { egg_x = 0; egg_vx = std::fabs(egg_vx); hit_x = true; }
+    if (egg_x + sw > W) { egg_x = W - sw; egg_vx = -std::fabs(egg_vx); hit_x = true; }
+    if (egg_y < 0) { egg_y = 0; egg_vy = std::fabs(egg_vy); hit_y = true; }
+    if (egg_y + sh > H) { egg_y = H - sh; egg_vy = -std::fabs(egg_vy); hit_y = true; }
+    // a little magnet so corners actually happen: a wall hit that lands within ~12% of a corner finishes the job
+    auto settle = [&](bool x_wall) {
+        if (x_wall) {
+            if (egg_y < H * 0.12) { egg_y = 0; hit_y = true; egg_vy = std::fabs(egg_vy); }
+            else if (egg_y + sh > H * 0.88) { egg_y = H - sh; hit_y = true; egg_vy = -std::fabs(egg_vy); }
+        } else {
+            if (egg_x < W * 0.12) { egg_x = 0; hit_x = true; egg_vx = std::fabs(egg_vx); }
+            else if (egg_x + sw > W * 0.88) { egg_x = W - sw; hit_x = true; egg_vx = -std::fabs(egg_vx); }
+        }
+    };
+    if (hit_x && !hit_y) settle(true);
+    else if (hit_y && !hit_x) settle(false);
+    if (hit_x && hit_y) {
+        egg_hue = std::fmod(egg_hue + 0.31, 1.0);
+        egg_corners++;
+        egg_flash = t + 0.6;
+    }
+    auto hsv = [](double h, double s_, double v) {
+        double r_ = 0, g = 0, b = 0;
+        int i = (int)std::floor(h * 6);
+        double f = h * 6 - i, p = v * (1 - s_), q = v * (1 - f * s_), tt = v * (1 - (1 - f) * s_);
+        switch (((i % 6) + 6) % 6) {
+            case 0: r_ = v; g = tt; b = p; break;
+            case 1: r_ = q; g = v; b = p; break;
+            case 2: r_ = p; g = v; b = tt; break;
+            case 3: r_ = p; g = q; b = v; break;
+            case 4: r_ = tt; g = p; b = v; break;
+            default: r_ = v; g = p; b = q; break;
+        }
+        return C3(r_, g, b);
+    };
+    C3 dark(0.12, 0.06, 0.18), white(1, 1, 1);
+    double ox = egg_x, oy = egg_y;
+    bool flip = egg_nyan && egg_vx < 0;  // the Nyan Cat flies head first
+    auto px = [&](double ux, double uy, double uw, double uh, C3 c, double a = 1.0) {
+        double x = flip ? 36 - ux - uw : ux;
+        r.rect(ox + x * u, oy + uy * u, uw * u, uh * u, C4(c, a));
+    };
+    if (egg_nyan) {
+        // rainbow trail (a wavy six-band stripe), pop-tart body, grey cat head, four feet and a tail
+        const C3 band[6] = {{1.0, 0.1, 0.1}, {1.0, 0.6, 0.1}, {1.0, 1.0, 0.1}, {0.2, 1.0, 0.2}, {0.2, 0.6, 1.0}, {0.55, 0.3, 1.0}};
+        for (int col = 0; col < 14; col++) {
+            double wave = std::sin(t * 9 - col * 0.9) * 0.8;
+            for (int b = 0; b < 6; b++) px(col, 5.5 + b * 1.7 + wave, 1.05, 1.7, band[b]);
+        }
+        C3 frosting = hsv(std::fmod(0.92 + egg_hue, 1.0), 0.45, 1.0);  // pink, drifting after every corner
+        px(14, 3, 16, 14, dark);                       // pop-tart outline
+        px(15, 4, 14, 12, C3(1.0, 0.82, 0.55));       // pastry
+        px(16.5, 5.5, 11, 9, frosting);               // frosting
+        for (int k = 0; k < 9; k++) px(17.5 + (k * 7) % 9, 6.2 + (k * 5) % 7, 0.9, 0.9, C3(0.85, 0.2, 0.45));  // sprinkles
+        px(26, 7, 10, 9, dark);                        // head outline
+        px(27, 8, 8, 7, C3(0.62, 0.62, 0.66));         // head
+        px(27, 5.5, 2, 2.5, C3(0.62, 0.62, 0.66));     // ears
+        px(33, 5.5, 2, 2.5, C3(0.62, 0.62, 0.66));
+        px(28.3, 10, 1.4, 2, dark);                    // eyes
+        px(32, 10, 1.4, 2, dark);
+        px(28.4, 10, 0.6, 0.7, white);
+        px(32.1, 10, 0.6, 0.7, white);
+        px(27.2, 12.6, 2, 1.4, C3(1.0, 0.5, 0.6), 0.9);  // cheeks
+        px(33.3, 12.6, 2, 1.4, C3(1.0, 0.5, 0.6), 0.9);
+        px(29.6, 13, 3, 0.8, dark);                    // mouth
+        double leg = std::sin(t * 12) * 0.5;
+        for (double lx : {15.5, 19.5, 23.5, 27.5}) px(lx, 16 + (lx > 20 ? leg : -leg), 2.2, 2.4, C3(0.62, 0.62, 0.66));  // feet
+        px(11.5, 8.5 + std::sin(t * 10), 4, 2.2, C3(0.62, 0.62, 0.66));                                                   // tail
+        for (int k = 0; k < 5; k++) {  // twinkling stars
+            double ph = std::fmod(t * 2 + k * 0.37, 1.0);
+            if (ph < 0.6) px(2 + k * 7 + (int)(t * 3 + k) % 3, ((k * 5) % 3 == 0 ? 0.5 : 18.0), 1.4, 1.4, white);
+        }
+    } else {
+        C3 body = hsv(egg_hue, 0.55, 1.0);
+        auto outline_rect = [&](double ux, double uy, double uw, double uh, C3 fill) {
+            px(ux - 1, uy - 1, uw + 2, uh + 2, dark);
+            px(ux, uy, uw, uh, fill);
+        };
+        for (int i = 0; i < 5; i++) {  // ears (stacked rows make the triangles), then the head
+            double wdt = 2 + i * 1.2;
+            outline_rect(2 + i * 0.3, 1 + i * 0.9, wdt, 1, body);
+            outline_rect(22 - 2 - i * 0.3 - wdt, 1 + i * 0.9, wdt, 1, body);
+        }
+        outline_rect(2, 5, 20, 11, body);
+        px(3.5, 5.7, 3, 2, hsv(egg_hue, 0.3, 1.0));
+        px(3, 2.5, 1.2, 2.2, hsv(egg_hue, 0.9, 0.8));
+        px(19.8, 2.5, 1.2, 2.2, hsv(egg_hue, 0.9, 0.8));
+        for (double ex : {5.0, 14.0}) {  // big anime eyes with two highlights each
+            px(ex, 7.5, 5, 6, dark);
+            px(ex + 0.7, 8.0, 3.6, 4.5, hsv(std::fmod(egg_hue + 0.5, 1.0), 0.7, 0.9));
+            px(ex + 1.5, 8.8, 2, 3, dark);
+            px(ex + 0.9, 8.1, 1.5, 1.5, white);
+            px(ex + 3.0, 10.8, 0.9, 0.9, white);
+        }
+        px(3.2, 12.4, 2.6, 1.3, C3(1.0, 0.45, 0.6), 0.75);
+        px(18.2, 12.4, 2.6, 1.3, C3(1.0, 0.45, 0.6), 0.75);
+        px(11.0, 12.2, 2, 1, C3(0.9, 0.35, 0.45));
+        px(9.8, 13.4, 1.2, 0.9, dark);
+        px(11.0, 13.9, 2, 0.9, dark);
+        px(13.0, 13.4, 1.2, 0.9, dark);
+        for (double wy : {10.0, 12.0}) {
+            px(-2.5, wy + (wy > 11 ? 0.8 : -0.4), 3.5, 0.5, dark);
+            px(22.9, wy + (wy > 11 ? 0.8 : -0.4), 3.5, 0.5, dark);
+        }
+    }
+    if (t < egg_flash) {
+        r.rect(ox - 2 * u, oy - 2 * u, sw + 4 * u, sh + 4 * u, C4(1, 1, 1, 0.25));
+        txt("CORNER!  x" + std::to_string(egg_corners), ox + sw / 2, oy - 4 * u, std::max(14.0, u * 3), C3(1, 1, 1), true);
+    }
+}
+
 void App::hud(double W, double H) {
     const Theme& th = *theme_;
+    egg_draw(W, H);
+    if (video_on && t >= hud_until) {  // watching: only the picture, subtitles and the skip prompt
+        video_overlay(W, H);
+        draw_volume(W, H);
+        return;
+    }
+    if (tv_ui && mode == "world" && !video_on) {  // the TV layout replaces the whole 3D-world HUD
+        tv_hud(W, H);
+        return;
+    }
+    if (video_on) {
+        video_overlay(W, H);
+        draw_volume(W, H);
+    }
     if (hide_ui) {  // reading mode: nothing but a faint chip to bring the controls back
         button("SHOW UI (U)", W - 118, H - 38, 108, 28, [this] { hide_ui = false; });
         return;
@@ -126,6 +325,7 @@ void App::hud(double W, double H) {
         }
         std::string help_text = "drag: orbit   right-drag: pan   wheel: zoom   / search   h history   r related   esc back   space pause   arrows seek/volume   n p next/prev   d dub   "
                                 "t theme   g arcade   l library   m manga   u hide UI" + more;
+        if (tv_remote) help_text = "";  // the keyboard shortcuts mean nothing on a TV: the remote hint below says what the buttons do
         size_t room = (size_t)std::max((int)((W - 44) / 6.4), 30);
         std::vector<std::string> lines;
         std::string cur;
@@ -148,6 +348,17 @@ void App::hud(double W, double H) {
     suggestions_dropdown(sx, sw);
     if (lib_typing) librarian_overlay(W, H);
     if (adv_open) advancement_panel(W, H);
+    if (tv_remote) {  // the remote's pointer: a white arrow with a dark outline, plus a hint line (fades after a while)
+        if (t < 30 || t - last_input < 8) txt(tv_cursor_on ? "REMOTE  d-pad: move   select: click   hold select + d-pad: drag / orbit   rew/ff: zoom   menu: keys   back: back"
+                         : "REMOTE  d-pad: arrow keys   select: enter   menu: pointer   back: back",
+            22, H - 182, 11, th.dim);
+        if (tv_cursor_on) {
+            auto [px, py] = tv_cursor;
+            double k = std::max(1.0, H / 1080.0) * 1.5;
+            for (int i = 0; i < 24; i++) r.rect(px - 1.5 * k, py + i * k - 1.5 * k, (i * 0.55 + 4) * k, k + 3 * k * 0.0 + 1.5 * k, C4(0.02, 0.02, 0.05, 0.9));
+            for (int i = 0; i < 22; i++) r.rect(px, py + i * k, (i * 0.55 + 1) * k, k, C4(1, 1, 1, 1));
+        }
+    }
     if (reading_focus()) {  // achievements wait until the book is closed
         for (auto& tt : toasts) tt.born += dt_last;
     } else {
@@ -725,11 +936,11 @@ void App::player_bar(double W, double H) {
         {!pl.value("paused", false) ? "PAUSE" : "PLAY", [this] { control("pause"); }, 74, pl.value("paused", false)},
         {"+10s", [this] { control("seek", 10); }, 58, false},
         {"NEXT >>", [this] { control("next"); }, 74, false},
-        {"SKIP INTRO", [this] { toggle_skip("intro"); }, 104, auto_intro},
-        {"SKIP CREDITS", [this] { toggle_skip("outro"); }, 124, auto_outro},
+        {"AUTO INTRO", [this] { toggle_skip("intro"); }, 104, auto_intro},
+        {"AUTO CREDITS", [this] { toggle_skip("outro"); }, 124, auto_outro},
         {su::upper(audio), [this] { toggle_mode(); }, 56, audio == "dub"},
         {"STOP", [this] { control("stop"); }, 58, false},
-        {"FULLSCREEN", [this] { control("fullscreen"); }, 96, false},
+        {"FULLSCREEN", [this] { control("fullscreen"); }, 96, false},  // (not shown on the TV build)
         {"AUTO FS", [this] { toggle_autofs(); }, 74, auto_fs},
         {"SUBS", [this] { control("subs"); }, 58, false},
         {"MUTE", [this] { control("mute"); }, 58, false},
@@ -740,6 +951,14 @@ void App::player_bar(double W, double H) {
          52, false},
         {"AUTO-NEXT", [this, an = pl.value("autonext", true)] { control("autonext", !an); }, 100, pl.value("autonext", true)},
     };
+    if (tv_remote) {  // the TV is always fullscreen
+        std::vector<Spec> tv;
+        for (auto& sp : specs) {
+            if (sp.label == "FULLSCREEN" || sp.label == "AUTO FS") continue;
+            tv.push_back(sp);
+        }
+        specs = tv;
+    }
     double vol_w = 150;
     double avail = w - 28 - vol_w - 8.0 * specs.size();
     double sum = 0;

@@ -78,6 +78,90 @@ public:
     std::unique_ptr<Library> lib;
     std::set<std::string> keys, pressed;
     bool arcade_menu = false;
+    // TV layout (Android): rail + hero + poster rows + detail page (see tvui.cpp)
+    bool tv_ui = false;
+    int tv_zone = 1, tv_rail = 1, tv_sec = 0, tv_idx = 0, tv_ep = -2, tv_cols = 6;  // zone 0 = rail, 1 = content
+    double tv_scroll = 0, vol_until = 0;
+    std::map<int, double> tv_hscroll;
+    struct TvItem {
+        std::string title, sub, id;
+        TexP poster;
+        int ref = -1;  // anime: index into scene.peds; manga: index into mg_items
+        bool starred = false;
+    };
+    struct TvCat {
+        std::string label;
+        std::vector<TvItem> items;
+    };
+    struct TvDetail {
+        bool open = false;
+        std::string title, unit;  // unit: "EP" / "CH"
+        TexP poster;
+        std::vector<std::string> eps;
+        std::set<std::string> watched;
+        bool starred = false;
+    };
+    std::vector<TvCat> tv_cats() const;  // what the dashboard lists: anime sections, or the manga categories
+    std::vector<std::string> tv_actions() const;
+    TvDetail tv_detail() const;
+    void tv_detail_play(const std::string& ep);
+    void tv_detail_star();
+    void tv_open(int ref);
+    void tv_action(const std::string& name);
+    // ---- manga on the TV (tvmanga.cpp)
+    struct MgItem {
+        json book;
+        TexP poster;
+        bool poster_loading = false;
+    };
+    bool tv_manga = false, mg_detail = false, mg_reading = false;
+    std::vector<MgItem> mg_items;
+    std::vector<std::pair<std::string, std::vector<int>>> mg_groups;
+    int mg_gen = 0, mg_open_item = -1, mg_cur = 0, mg_strip = -1;
+    BookP mg_book;
+    std::vector<std::string> mg_chapters;
+    std::set<std::string> mg_read, mg_listed, mg_busy;
+    std::string mg_chapter;
+    std::vector<std::string> mg_pages;
+    std::map<std::string, TexP> mg_tex;
+    double mg_scroll = 0, mg_hud = 0;
+    void mg_enter();
+    void mg_search(const std::string& q);
+    void mg_fill(const json& groups);
+    void mg_open(int item);
+    void mg_read_chapter(const std::string& ch);
+    void mg_step_chapter(int dir);
+    void mg_close_reader();
+    void mg_load(const std::string& url);
+    bool mg_key(const std::string& key);
+    void mg_draw(double W, double H);
+    std::vector<std::vector<int>> tv_rows() const;
+    bool tv_key(const std::string& key);
+    bool tv_back();
+    void tv_menu();
+    void tv_rail_go(int i);
+    void tv_hud(double W, double H);
+    void dash_build();   // the 3D dashboard (dash.cpp)
+    void dash_text(const std::string& s, double x, double y, double z, double size, C3 col, double alpha, bool center);
+    std::string dash_clip(const std::string& s, size_t n) const;
+    double dash_tab = 0, dash_item = 0, dash_grid = 0, dash_pulse = 0;
+    int dash_last_tab = -1;
+    void draw_volume(double W, double H);
+    void tv_volume(double delta);
+    void show_watchlist();
+    void show_watching();  // the TV's home: what you are in the middle of, then what you watched recently
+    // easter egg: UP UP DOWN DOWN LEFT RIGHT LEFT RIGHT sends an anime cat bouncing around the screen like a DVD logo
+    bool egg_on = false;
+    double egg_x = 40, egg_y = 30, egg_vx = 190, egg_vy = 125, egg_hue = 0.55, egg_flash = 0;
+    int egg_corners = 0;
+    std::deque<std::string> egg_keys;
+    void egg_draw(double W, double H);
+    bool tv_manga_reading_guard() const { return mg_reading; }
+    bool video_on = false;        // Android: a video fills the screen (the renderer shows it instead of the 3D world)
+    double last_input = 0, hud_until = 0, egg_start = 0;
+    bool egg_auto = false, egg_nyan = false;  // video: last key / pointer event; the full HUD is shown until hud_until
+    bool tv_remote = false, tv_cursor_on = false;  // TV remote: the D-pad pointer (see remote.hpp)
+    std::pair<double, double> tv_cursor{0, 0};
     std::pair<double, double> cam_ground{0, 60};
     std::optional<int> dino_hover, follow;
     std::optional<std::pair<int, double>> dino_card;
@@ -197,6 +281,8 @@ public:
     bool hit_test(double x, double y, double w, double h) const;
     bool over_hits() const;
     void hud(double W, double H);
+    void video_overlay(double W, double H);  // subtitles, the SKIP INTRO / CREDITS prompt, a thin progress bar
+    std::string skip_prompt() const;         // "intro" / "outro" while that scene is on screen, else ""
     void suggestions_dropdown(double sx, double sw);
     void toast_hud(double W, double H);
     void advancement_panel(double W, double H);

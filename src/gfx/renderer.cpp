@@ -1,5 +1,6 @@
 #include "renderer.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -90,7 +91,11 @@ static std::vector<float> cube_vertices() {
 }
 
 Renderer::Renderer() {
+#ifdef ANI_GLES
+    const char* ver = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n";
+#else
     const char* ver = "#version 330 core\n";
+#endif
     box_prog = program(std::string(ver) + shaders::GLOBALS + shaders::BOX_VS, std::string(ver) + shaders::GLOBALS + shaders::BOX_FS);
     floor_prog = program(std::string(ver) + shaders::GLOBALS + shaders::FLOOR_VS, std::string(ver) + shaders::GLOBALS + shaders::FLOOR_FS);
     quad_prog = program(std::string(ver) + shaders::QUAD_VS, std::string(ver) + shaders::QUAD_FS);
@@ -163,9 +168,11 @@ TexP Renderer::make_texture(const uint8_t* rgba, int w, int h, bool mips) {
 }
 
 void Renderer::resize(int w, int h) {
-    if (w == w_ && h == h_ && msaa_fbo) return;
-    w_ = w < 1 ? 1 : w;
-    h_ = h < 1 ? 1 : h;
+    if (w == out_w_ && h == out_h_ && msaa_fbo) return;
+    out_w_ = w < 1 ? 1 : w;
+    out_h_ = h < 1 ? 1 : h;
+    w_ = std::max(1, (int)(out_w_ * scale_ + 0.5));
+    h_ = std::max(1, (int)(out_h_ * scale_ + 0.5));
     if (!msaa_fbo) {
         glGenFramebuffers(1, &msaa_fbo);
         glGenFramebuffers(1, &resolve_fbo);
@@ -175,7 +182,7 @@ void Renderer::resize(int w, int h) {
     }
     int max_samples = 4;
     glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
-    samples = max_samples < 4 ? max_samples : 4;
+    samples = max_samples < msaa_ ? max_samples : msaa_;
     glBindRenderbuffer(GL_RENDERBUFFER, msaa_color);
     glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_RGBA8, w_, h_);
     glBindRenderbuffer(GL_RENDERBUFFER, msaa_depth);
@@ -201,7 +208,7 @@ void Renderer::set_camera(const M4& view, const M4& proj, const V3& cam, double 
     viewproj.gpu(b);
     b[16] = (float)cam.x; b[17] = (float)cam.y; b[18] = (float)cam.z; b[19] = 0;
     b[20] = th.fog.r; b[21] = th.fog.g; b[22] = th.fog.b; b[23] = th.density;
-    b[24] = (float)t; b[25] = (float)th.levels; b[26] = (float)flash; b[27] = th.floor_style;
+    b[24] = (float)t; b[25] = (float)th.levels; b[26] = (float)flash; b[27] = floor_override_ >= 0 ? (float)floor_override_ : th.floor_style;
     const C3* cs[4] = {&th.floor_base, &th.floor_small, &th.floor_big, &th.glow};
     for (int i = 0; i < 4; i++) {
         b[28 + i * 4] = cs[i]->r;
@@ -235,23 +242,95 @@ void Renderer::quad2d(const TexP& tex, double x, double y, double w, double h, C
     q2d.push_back(std::move(q));
 }
 
+#ifdef ANI_GLES
+static const char* const VIDEO_VS = R"GLSL(#version 300 es
+precision highp float;
+uniform vec4 v_fit;      // x0, y0, x1, y1 in clip space
+uniform mat4 v_tm;       // SurfaceTexture transform
+out vec2 v_uv;
+void main() {
+  vec2 c[6] = vec2[6](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0));
+  vec2 k = c[gl_VertexID];
+  gl_Position = vec4(mix(v_fit.xy, v_fit.zw, k), 0.0, 1.0);
+  v_uv = (v_tm * vec4(k, 0.0, 1.0)).xy;
+}
+)GLSL";
+static const char* const VIDEO_FS = R"GLSL(#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision mediump float;
+uniform samplerExternalOES v_tex;
+in vec2 v_uv;
+out vec4 o_color;
+void main() { o_color = vec4(texture(v_tex, v_uv).rgb, 1.0); }
+)GLSL";
+
+unsigned Renderer::ensure_video_tex() {
+    if (video_tex_) return video_tex_;
+    glGenTextures(1, &video_tex_);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, video_tex_);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    video_prog_ = program(VIDEO_VS, VIDEO_FS);
+    return video_tex_;
+}
+#else
+unsigned Renderer::ensure_video_tex() { return 0; }
+#endif
+
+void Renderer::set_video(bool on, const float* m, int vw, int vh) {
+    video_on_ = on && video_tex_ != 0;
+    if (m) std::memcpy(video_mat_, m, sizeof video_mat_);
+    video_w_ = vw;
+    video_h_ = vh;
+}
+
 void Renderer::render(int target_fbo) {
+    last_boxes = boxes.size();
+    last_quads = q3d.size() + q2d.size();
     glBindFramebuffer(GL_FRAMEBUFFER, msaa_fbo);
     glViewport(0, 0, w_, h_);
     glClearColor(clear[0], clear[1], clear[2], 1.0f);
     glDepthMask(GL_TRUE);
+#ifdef ANI_GLES
+    glClearDepthf(1.0f);
+#else
     glClearDepth(1.0);
+#endif
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glDisable(GL_BLEND);
 
+    if (video_on_) {  // a playing video replaces the 3D world: black, then the picture fitted to the window
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST);
+#ifdef ANI_GLES
+        double asp = video_w_ > 0 && video_h_ > 0 ? (double)video_w_ / video_h_ : 16.0 / 9.0, win = (double)w_ / h_;
+        float fx = asp > win ? 1.0f : (float)(asp / win), fy = asp > win ? (float)(win / asp) : 1.0f;
+        glUseProgram(video_prog_);
+        glUniform4f(glGetUniformLocation(video_prog_, "v_fit"), -fx, -fy, fx, fy);
+        glUniformMatrix4fv(glGetUniformLocation(video_prog_, "v_tm"), 1, GL_FALSE, video_mat_);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, video_tex_);
+        glUniform1i(glGetUniformLocation(video_prog_, "v_tex"), 0);
+        glBindVertexArray(empty_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+#endif
+        boxes.clear();
+        q3d.clear();
+    }
+
     // floor
+    if (!video_on_) {
     glDisable(GL_CULL_FACE);
     glUseProgram(floor_prog);
     upload_globals(floor_prog);
     glBindVertexArray(empty_vao);
     glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
 
     // boxes
     size_t n = boxes.size() < (size_t)MAX_BOXES ? boxes.size() : (size_t)MAX_BOXES;
@@ -309,7 +388,7 @@ void Renderer::render(int target_fbo) {
     glBlitFramebuffer(0, 0, w_, h_, 0, 0, w_, h_, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, resolve_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)target_fbo);
-    glBlitFramebuffer(0, 0, w_, h_, 0, 0, w_, h_, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBlitFramebuffer(0, 0, w_, h_, 0, 0, out_w_, out_h_, GL_COLOR_BUFFER_BIT, (w_ == out_w_ && h_ == out_h_) ? GL_NEAREST : GL_LINEAR);
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)target_fbo);
     boxes.clear();
     q3d.clear();

@@ -1,8 +1,18 @@
 // Minimal OpenGL 3.3 core loader on top of SDL_GL_GetProcAddress (works the same on Linux, Windows and macOS).
 #pragma once
 #include <SDL.h>
+#ifdef ANI_GLES
+// OpenGL ES 3.0 (Android / Fire TV, or a desktop test build against Mesa's GLES): every function used is core in ES 3.0
+// and linked directly, so there is nothing to load.
+#include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
+#else
 #include <SDL_opengl.h>
+#endif
 
+#ifdef ANI_GLES
+#define ANI_GL_FUNCS(X)
+#else
 #define ANI_GL_FUNCS(X)                                                              \
     X(PFNGLCREATESHADERPROC, glCreateShader)                                         \
     X(PFNGLSHADERSOURCEPROC, glShaderSource)                                         \
@@ -90,5 +100,7 @@ ANI_GL_FUNCS(ANI_GL_DECLARE)
 #define glBlitFramebuffer glBlitFramebuffer_p
 #define glCheckFramebufferStatus glCheckFramebufferStatus_p
 #define glBlendFuncSeparate glBlendFuncSeparate_p
+
+#endif  // !ANI_GLES
 
 bool gl_load();  // false if a function is missing (needs an OpenGL 3.3 driver)
