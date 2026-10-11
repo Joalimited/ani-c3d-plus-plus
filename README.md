@@ -67,6 +67,26 @@ keyboard: the 3D world becomes a dashboard in the spirit of the original Xbox da
 
    No `adb` installed? On Fedora `sudo dnf install android-tools`, on Debian / Ubuntu `sudo apt install adb`, or use
    the build container (below). A sideloading app such as *Downloader* on the stick also works if you host the APK.
+   **From a Windows PC** the steps are the same, only the way you get `adb` and run it differs:
+
+   1. Install `adb` (Android platform-tools), either with `winget install Google.PlatformTools` in PowerShell, or by
+      downloading *SDK Platform-Tools for Windows* from developer.android.com and unzipping it, for example to
+      `C:\platform-tools`. No driver is needed - the stick is reached over Wi-Fi, not USB.
+   2. Put `ani-c3d-firetv.apk` in that folder (or use its full path) and open PowerShell or Command Prompt there. If you
+      unzipped instead of using winget, run `.\adb` where the examples below say `adb`:
+
+      ```powershell
+      .\adb connect 192.168.1.50:5555          # your stick's IP; accept the "Allow USB debugging?" prompt on the TV
+      .\adb install -r ani-c3d-firetv.apk      # -r keeps your watchlist and history when updating
+      .\adb shell am start -n com.ani.c3d/.MainActivity
+      ```
+
+   3. `adb logcat -s ani-c3d`, `adb shell am force-stop com.ani.c3d` and `adb uninstall com.ani.c3d` work the same way.
+   4. If Windows Firewall asks whether adb may use the network, allow it on **Private networks**. The PC and the stick
+      must be on the same network. Run `adb kill-server` and connect again if it says `unauthorized` or `offline`.
+   5. To **build** the APK on Windows, run the build commands in [Building the APK](#building-the-apk) from **WSL2**
+      (Ubuntu with Podman or Docker installed), because `tools/build.sh` and the Android scripts are bash scripts.
+
 5. The app shows up under **Apps & Games** as **ani-c3d**. Useful extras:
 
    ```sh
