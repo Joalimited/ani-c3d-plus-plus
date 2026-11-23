@@ -86,7 +86,7 @@ local function click(t)
         mp.commandv("script-message", "anic3d-skip", which)
         return
     end
-    if menu_on then
+    if menu_on and fade > 0.3 then
         for _, h in ipairs(hits) do
             if mx >= h[1] and mx <= h[3] and my >= h[2] and my <= h[4] then
                 h[5](mx)
@@ -94,7 +94,7 @@ local function click(t)
                 return
             end
         end
-        if my >= 540 then return end   -- the bar itself: nothing
+        if my >= 590 then return end   -- the bar itself: nothing
     end
     mp.commandv("cycle", "pause")   -- not on a button: the default click-to-pause
 end
@@ -105,42 +105,55 @@ local function fmt(s)
     return string.format("%02d:%02d", math.floor(s / 60), s % 60)
 end
 
-local function rect(parts, x0, y0, x1, y1, col, alpha)
-    parts[#parts + 1] = string.format("{\\an7\\pos(0,0)\\1c&H%s&\\1a&H%s&\\bord0\\p1}m %d %d l %d %d %d %d %d %d{\\p0}",
-        col, alpha, x0, y0, x1, y0, x1, y1, x0, y1)
+-- the menu fades: `fade` runs 0..1 (in 0.1 s, out 0.25 s); every alpha is scaled by it
+local fade, fade_t = 0, 0
+local function fa(base)   -- ASS alpha (0 = opaque .. 255 = clear) of something that is `base` when fully faded in
+    return string.format("%02X", math.floor(255 - (255 - base) * fade + 0.5))
+end
+
+-- filled rectangle; r > 0 rounds the corners (a same-coloured border with round joins)
+local function rect(parts, x0, y0, x1, y1, col, alpha, r)
+    r = r or 0
+    local a = fa(tonumber(alpha, 16))
+    parts[#parts + 1] = string.format("{\\an7\\pos(0,0)\\1c&H%s&\\1a&H%s&\\3c&H%s&\\3a&H%s&\\bord%d\\p1}m %d %d l %d %d %d %d %d %d{\\p0}",
+        col, a, col, a, r, x0 + r, y0 + r, x1 - r, y0 + r, x1 - r, y1 - r, x0 + r, y1 - r)
 end
 
 local function draw_menu(mx, my)
     hits = {}
     local p = {}
-    rect(p, 0, 540, 1280, 720, "000000", "30")
-    p[#p + 1] = string.format("{\\an4\\pos(24,560)\\1c&HFFFFFF&\\bord0\\fs22\\b1}%s  [%s]", clean(title), string.upper(eng.mode))
-    p[#p + 1] = string.format("{\\an6\\pos(1256,560)\\1c&HFFFFFF&\\bord0\\fs22}%s / %s", fmt(pos), fmt(dur))
-    -- seek bar
-    rect(p, 24, 580, 1256, 592, "505050", "00")
-    if dur > 0 then rect(p, 24, 580, 24 + 1232 * math.min(1, pos / dur), 592, "FFFFFF", "00") end
-    hits[#hits + 1] = {24, 570, 1256, 602, function(x)
-        mp.commandv("seek", tostring(math.max(0, math.min(100, (x - 24) / 1232 * 100))), "absolute-percent")
+    local T = "\\alpha&H" .. fa(0) .. "&"   -- text opacity
+    -- panel
+    rect(p, 0, 590, 1280, 720, "000000", "50")
+    p[#p + 1] = string.format("{\\an4\\pos(28,608)%s\\1c&HFFFFFF&\\bord0\\fs20\\b1}%s{\\fs15\\b0\\1c&HC8C8C8&}   %s", T, clean(title), string.upper(eng.mode))
+    p[#p + 1] = string.format("{\\an6\\pos(1252,608)%s\\1c&HFFFFFF&\\bord0\\fs16\\b0}%s {\\1c&H909090&}/ %s", T, fmt(pos), fmt(dur))
+    -- seek bar with a knob
+    local frac = dur > 0 and math.min(1, pos / dur) or 0
+    rect(p, 28, 620, 1252, 625, "5A5A5A", "30", 2)
+    if frac > 0 then rect(p, 28, 620, 28 + 1224 * frac, 625, "FFFFFF", "00", 2) end
+    rect(p, 28 + 1224 * frac - 5, 617, 28 + 1224 * frac + 5, 628, "FFFFFF", "00", 5)
+    hits[#hits + 1] = {28, 612, 1252, 634, function(x)
+        mp.commandv("seek", tostring(math.max(0, math.min(100, (x - 28) / 1224 * 100))), "absolute-percent")
     end}
-    local function row(y, items)
-        local x = 24
+    -- buttons: pills sized to their label; `x` is where the row starts
+    local function row(y, items, x)
         for _, it in ipairs(items) do
-            local w = #it[1] * 13 + 28
-            local hot = mx >= x and mx <= x + w and my >= y and my <= y + 40
-            local fill = it[3] and "FFFFFF" or (hot and "A0A0A0" or "303030")
-            local text = (it[3] or hot) and "000000" or "FFFFFF"
-            rect(p, x, y, x + w, y + 40, fill, "10")
-            p[#p + 1] = string.format("{\\an5\\pos(%d,%d)\\1c&H%s&\\bord0\\fs20\\b1}%s", x + w / 2, y + 20, text, it[1])
-            hits[#hits + 1] = {x, y, x + w, y + 40, it[2]}
-            x = x + w + 8
+            local w = math.max(40, #it[1] * 10 + 22)
+            local hot = mx >= x and mx <= x + w and my >= y and my <= y + 28
+            local fill = it[3] and "FFFFFF" or (hot and "6A6A6A" or "2E2E2E")
+            local text = it[3] and "000000" or "FFFFFF"
+            rect(p, x, y, x + w, y + 28, fill, it[3] and "00" or "18", 6)
+            p[#p + 1] = string.format("{\\an5\\pos(%d,%d)%s\\1c&H%s&\\bord0\\fs15\\b1}%s", x + w / 2, y + 15, T, text, it[1])
+            hits[#hits + 1] = {x, y, x + w, y + 28, it[2]}
+            x = x + w + 6
         end
     end
-    row(606, {
-        {"<< PREV", function() ctl("prev") end},
+    row(638, {
+        {"PREV", function() ctl("prev") end},
         {"-10s", function() mp.commandv("seek", "-10", "relative") end},
         {st.pause and "PLAY" or "PAUSE", function() mp.commandv("cycle", "pause") end, st.pause},
         {"+10s", function() mp.commandv("seek", "10", "relative") end},
-        {"NEXT >>", function() ctl("next") end},
+        {"NEXT", function() ctl("next") end},
         {"STOP", function() ctl("stop") end},
         {"MUTE", function() mp.commandv("cycle", "mute") end, st.mute},
         {string.format("%gx", st.speed), function()
@@ -148,22 +161,22 @@ local function draw_menu(mx, my)
             local n = s == 0.75 and 1.0 or s == 1.0 and 1.25 or s == 1.25 and 1.5 or s == 1.5 and 2.0 or 0.75
             mp.commandv("set", "speed", tostring(n))
         end},
-    })
-    row(656, {
+    }, 28)
+    row(672, {
         {"AUTO INTRO", function() ctl("toggle_autoskip", "intro") end, eng.intro},
         {"AUTO CREDITS", function() ctl("toggle_autoskip", "outro") end, eng.outro},
-        {string.upper(eng.mode), function() ctl("mode") end, eng.mode == "dub"},
-        {"SUBS", function() mp.commandv("cycle", "sub-visibility") end, st.subs},
         {"AUTO-NEXT", function() ctl("toggle_autonext") end, eng.autonext},
-        {"FULLSCREEN", function() mp.commandv("cycle", "fullscreen") end, st.fs},
         {"AUTO FS", function() ctl("toggle_autofs") end, eng.autofs},
-    })
-    -- volume (0-130)
-    p[#p + 1] = "{\\an4\\pos(1030,626)\\1c&HFFFFFF&\\bord0\\fs20\\b1}VOL"
-    rect(p, 1080, 620, 1256, 632, "505050", "00")
-    rect(p, 1080, 620, 1080 + 176 * math.min(1, st.volume / 130), 632, "FFFFFF", "00")
-    hits[#hits + 1] = {1070, 606, 1256, 646, function(x)
-        mp.commandv("set", "volume", tostring(math.floor(math.max(0, math.min(130, (x - 1080) / 176 * 130)))))
+        {"AUDIO " .. string.upper(eng.mode), function() ctl("mode") end, eng.mode == "dub"},
+        {"SUBTITLES", function() mp.commandv("cycle", "sub-visibility") end, st.subs},
+        {"FULLSCREEN", function() mp.commandv("cycle", "fullscreen") end, st.fs},
+    }, 28)
+    -- volume (0-130), right-aligned on the top button row
+    p[#p + 1] = string.format("{\\an6\\pos(1062,652)%s\\1c&HC8C8C8&\\bord0\\fs14\\b1}VOL", T)
+    rect(p, 1072, 649, 1252, 655, "5A5A5A", "30", 3)
+    rect(p, 1072, 649, 1072 + 180 * math.min(1, st.volume / 130), 655, "FFFFFF", "00", 3)
+    hits[#hits + 1] = {1064, 640, 1260, 664, function(x)
+        mp.commandv("set", "volume", tostring(math.floor(math.max(0, math.min(130, (x - 1072) / 180 * 130)))))
     end}
     menu_ov.data = table.concat(p, "\n")
     menu_ov:update()
@@ -171,8 +184,12 @@ end
 
 local function draw()
     local mx, my = mouse_xy()
-    local want_menu = st.pause or mp.get_time() < menu_until
-    if want_menu then
+    local now = mp.get_time()
+    local want_menu = st.pause or now < menu_until
+    local dt = math.min(0.2, now - fade_t)
+    fade_t = now
+    if want_menu then fade = math.min(1, fade + dt / 0.1) else fade = math.max(0, fade - dt / 0.25) end
+    if fade > 0 then
         menu_on = true
         draw_menu(mx, my)
     elseif menu_on then
@@ -192,7 +209,7 @@ local function draw()
     else
         which = want
         shown = want
-        sy0, sy1 = menu_on and 470 or 590, menu_on and 530 or 650
+        sy0, sy1 = menu_on and 515 or 590, menu_on and 575 or 650
         local hot = mx >= sx0 and mx <= sx1 and my >= sy0 and my <= sy1
         local fill = hot and "FFFFFF" or "202020"
         local text = hot and "000000" or "FFFFFF"
@@ -225,7 +242,7 @@ mp.observe_property("mouse-pos", "native", function()
     menu_until = mp.get_time() + 3
     draw()
 end)
-mp.add_periodic_timer(0.5, function() if menu_on then draw() end end)   -- hides the menu again after 3 s
+mp.add_periodic_timer(0.04, function() if menu_on then draw() end end)   -- animates the fade and hides the menu again after 3 s
 mp.register_script_message("anic3d-range", function(a, b, c, d)
     ia, ib, oa, ob = tonumber(a) or -1, tonumber(b) or -1, tonumber(c) or -1, tonumber(d) or -1
     draw()
@@ -535,7 +552,8 @@ void Engine::play(const std::string& ep, double start) {
         skip_.clear();
     }
     std::vector<std::string> args = {mpv_path, "--no-terminal", "--input-ipc-server=" + sock_, "--referrer=" + refr,
-                                     "--force-media-title=" + title + " Episode " + ep, "--keep-open=no"};
+                                     "--force-media-title=" + title + " Episode " + ep, "--keep-open=no",
+                                     "--osc=no"};  // no stock mpv controller: the Lua menu below is the only on-screen UI
     bool hls = su::contains(video, "m3u8");
     if (hls) {  // some hosts serve playlists under odd names ("...?t.m3u8"), which ffmpeg won't sniff as HLS
         args.push_back("--demuxer-lavf-format=hls");

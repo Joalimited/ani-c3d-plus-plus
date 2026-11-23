@@ -545,8 +545,8 @@ void Library::zoom_by(double dy) {
 
 void Library::pan_by(double dx, double dy) {
     double s = app.scene.cam.dist * 0.0016;
-    if (bv && bv->scrolling()) {  // drag the paper up to read on
-        bv->scroll_by(-dy * s);
+    if (bv && bv->scrolling()) {  // drag down = the page moves up (read on); drag up = the page moves down
+        bv->scroll_by(dy * s);
         bv->sy = bv->sy_goal;
         pan[0] -= dx * s;
         return;
