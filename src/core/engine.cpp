@@ -94,7 +94,7 @@ local function click(t)
                 return
             end
         end
-        if my >= 590 then return end   -- the bar itself: nothing
+        if my >= 650 then return end   -- the bar itself: nothing
     end
     mp.commandv("cycle", "pause")   -- not on a button: the default click-to-pause
 end
@@ -107,6 +107,7 @@ end
 
 -- the menu fades: `fade` runs 0..1 (in 0.1 s, out 0.25 s); every alpha is scaled by it
 local fade, fade_t = 0, 0
+local opts_open = false   -- the SETTINGS list
 local function fa(base)   -- ASS alpha (0 = opaque .. 255 = clear) of something that is `base` when fully faded in
     return string.format("%02X", math.floor(255 - (255 - base) * fade + 0.5))
 end
@@ -123,61 +124,79 @@ local function draw_menu(mx, my)
     hits = {}
     local p = {}
     local T = "\\alpha&H" .. fa(0) .. "&"   -- text opacity
-    -- panel
-    rect(p, 0, 590, 1280, 720, "000000", "50")
-    p[#p + 1] = string.format("{\\an4\\pos(28,608)%s\\1c&HFFFFFF&\\bord0\\fs20\\b1}%s{\\fs15\\b0\\1c&HC8C8C8&}   %s", T, clean(title), string.upper(eng.mode))
-    p[#p + 1] = string.format("{\\an6\\pos(1252,608)%s\\1c&HFFFFFF&\\bord0\\fs16\\b0}%s {\\1c&H909090&}/ %s", T, fmt(pos), fmt(dur))
-    -- seek bar with a knob
+    local function inside(x0, y0, x1, y1) return mx >= x0 and mx <= x1 and my >= y0 and my <= y1 end
+    -- the bar: title / time, seek line, one row of buttons (everything else lives in the SETTINGS list)
+    rect(p, 0, 650, 1280, 720, "000000", "50")
+    p[#p + 1] = string.format("{\\an4\\pos(28,663)%s\\1c&HFFFFFF&\\bord0\\fs18\\b1}%s{\\fs14\\b0\\1c&HC8C8C8&}   %s", T, clean(title), string.upper(eng.mode))
+    p[#p + 1] = string.format("{\\an6\\pos(1252,663)%s\\1c&HFFFFFF&\\bord0\\fs15\\b0}%s {\\1c&H909090&}/ %s", T, fmt(pos), fmt(dur))
     local frac = dur > 0 and math.min(1, pos / dur) or 0
-    rect(p, 28, 620, 1252, 625, "5A5A5A", "30", 2)
-    if frac > 0 then rect(p, 28, 620, 28 + 1224 * frac, 625, "FFFFFF", "00", 2) end
-    rect(p, 28 + 1224 * frac - 5, 617, 28 + 1224 * frac + 5, 628, "FFFFFF", "00", 5)
-    hits[#hits + 1] = {28, 612, 1252, 634, function(x)
+    rect(p, 28, 675, 1252, 680, "5A5A5A", "30", 2)
+    if frac > 0 then rect(p, 28, 675, 28 + 1224 * frac, 680, "FFFFFF", "00", 2) end
+    rect(p, 28 + 1224 * frac - 5, 672, 28 + 1224 * frac + 5, 683, "FFFFFF", "00", 5)
+    hits[#hits + 1] = {28, 668, 1252, 688, function(x)
         mp.commandv("seek", tostring(math.max(0, math.min(100, (x - 28) / 1224 * 100))), "absolute-percent")
     end}
-    -- buttons: pills sized to their label; `x` is where the row starts
-    local function row(y, items, x)
-        for _, it in ipairs(items) do
-            local w = math.max(40, #it[1] * 10 + 22)
-            local hot = mx >= x and mx <= x + w and my >= y and my <= y + 28
-            local fill = it[3] and "FFFFFF" or (hot and "6A6A6A" or "2E2E2E")
-            local text = it[3] and "000000" or "FFFFFF"
-            rect(p, x, y, x + w, y + 28, fill, it[3] and "00" or "18", 6)
-            p[#p + 1] = string.format("{\\an5\\pos(%d,%d)%s\\1c&H%s&\\bord0\\fs15\\b1}%s", x + w / 2, y + 15, T, text, it[1])
-            hits[#hits + 1] = {x, y, x + w, y + 28, it[2]}
-            x = x + w + 6
-        end
+    local function pill(x, y, label, on, fn, h)
+        local w = math.max(36, #label * 9 + 20)
+        local hot = inside(x, y, x + w, y + h)
+        rect(p, x, y, x + w, y + h, on and "FFFFFF" or (hot and "6A6A6A" or "2E2E2E"), on and "00" or "18", 6)
+        p[#p + 1] = string.format("{\\an5\\pos(%d,%d)%s\\1c&H%s&\\bord0\\fs14\\b1}%s", x + w / 2, y + h / 2 + 1, T, on and "000000" or "FFFFFF", label)
+        hits[#hits + 1] = {x, y, x + w, y + h, fn}
+        return w
     end
-    row(638, {
+    local x = 28
+    for _, it in ipairs({
         {"PREV", function() ctl("prev") end},
         {"-10s", function() mp.commandv("seek", "-10", "relative") end},
         {st.pause and "PLAY" or "PAUSE", function() mp.commandv("cycle", "pause") end, st.pause},
         {"+10s", function() mp.commandv("seek", "10", "relative") end},
         {"NEXT", function() ctl("next") end},
         {"STOP", function() ctl("stop") end},
-        {"MUTE", function() mp.commandv("cycle", "mute") end, st.mute},
-        {string.format("%gx", st.speed), function()
-            local s = st.speed
-            local n = s == 0.75 and 1.0 or s == 1.0 and 1.25 or s == 1.25 and 1.5 or s == 1.5 and 2.0 or 0.75
-            mp.commandv("set", "speed", tostring(n))
-        end},
-    }, 28)
-    row(672, {
-        {"AUTO INTRO", function() ctl("toggle_autoskip", "intro") end, eng.intro},
-        {"AUTO CREDITS", function() ctl("toggle_autoskip", "outro") end, eng.outro},
-        {"AUTO-NEXT", function() ctl("toggle_autonext") end, eng.autonext},
-        {"AUTO FS", function() ctl("toggle_autofs") end, eng.autofs},
-        {"AUDIO " .. string.upper(eng.mode), function() ctl("mode") end, eng.mode == "dub"},
-        {"SUBTITLES", function() mp.commandv("cycle", "sub-visibility") end, st.subs},
-        {"FULLSCREEN", function() mp.commandv("cycle", "fullscreen") end, st.fs},
-    }, 28)
-    -- volume (0-130), right-aligned on the top button row
-    p[#p + 1] = string.format("{\\an6\\pos(1062,652)%s\\1c&HC8C8C8&\\bord0\\fs14\\b1}VOL", T)
-    rect(p, 1072, 649, 1252, 655, "5A5A5A", "30", 3)
-    rect(p, 1072, 649, 1072 + 180 * math.min(1, st.volume / 130), 655, "FFFFFF", "00", 3)
-    hits[#hits + 1] = {1064, 640, 1260, 664, function(x)
-        mp.commandv("set", "volume", tostring(math.floor(math.max(0, math.min(130, (x - 1072) / 180 * 130)))))
+    }) do x = x + pill(x, 690, it[1], it[3], it[2], 24) + 6 end
+    -- volume (0-130) and the SETTINGS button, right-aligned
+    p[#p + 1] = string.format("{\\an6\\pos(1000,703)%s\\1c&HC8C8C8&\\bord0\\fs13\\b1}VOL", T)
+    rect(p, 1010, 700, 1140, 705, "5A5A5A", "30", 2)
+    rect(p, 1010, 700, 1010 + 130 * math.min(1, st.volume / 130), 705, "FFFFFF", "00", 2)
+    hits[#hits + 1] = {1004, 692, 1146, 714, function(mxv)
+        mp.commandv("set", "volume", tostring(math.floor(math.max(0, math.min(130, (mxv - 1010) / 130 * 130)))))
     end}
+    pill(1160, 690, "SETTINGS", opts_open, function() opts_open = not opts_open end, 24)
+
+    -- the settings list: a side panel above the bar's right end, so the subtitles (bottom centre) stay clear
+    if opts_open then
+        local function onoff(v) return v and "ON" or "OFF" end
+        local items = {
+            {"Auto skip intro", onoff(eng.intro), eng.intro, function() ctl("toggle_autoskip", "intro") end},
+            {"Auto skip credits", onoff(eng.outro), eng.outro, function() ctl("toggle_autoskip", "outro") end},
+            {"Auto-next episode", onoff(eng.autonext), eng.autonext, function() ctl("toggle_autonext") end},
+            {"Auto fullscreen", onoff(eng.autofs), eng.autofs, function() ctl("toggle_autofs") end},
+            {"Audio", string.upper(eng.mode), eng.mode == "dub", function() ctl("mode") end},
+            {"Subtitles", onoff(st.subs), st.subs, function() mp.commandv("cycle", "sub-visibility") end},
+            {"Fullscreen", onoff(st.fs), st.fs, function() mp.commandv("cycle", "fullscreen") end},
+            {"Mute", onoff(st.mute), st.mute, function() mp.commandv("cycle", "mute") end},
+            {"Speed", string.format("%gx", st.speed), st.speed ~= 1, function()
+                local s = st.speed
+                local n = s == 0.75 and 1.0 or s == 1.0 and 1.25 or s == 1.25 and 1.5 or s == 1.5 and 2.0 or 0.75
+                mp.commandv("set", "speed", tostring(n))
+            end},
+        }
+        local rh = 28
+        local px0, px1 = 1000, 1252
+        local py1 = 644
+        local py0 = py1 - #items * rh - 12
+        rect(p, px0, py0, px1, py1, "000000", "40", 8)
+        for i, it in ipairs(items) do
+            local y = py0 + 6 + (i - 1) * rh
+            local hot = inside(px0, y, px1, y + rh)
+            if hot then rect(p, px0 + 4, y, px1 - 4, y + rh, "FFFFFF", "D8", 6) end
+            p[#p + 1] = string.format("{\\an4\\pos(%d,%d)%s\\1c&HFFFFFF&\\bord0\\fs15\\b0}%s", px0 + 16, y + rh / 2 + 1, T, it[1])
+            local vw = math.max(34, #it[2] * 9 + 16)
+            rect(p, px1 - 14 - vw, y + 4, px1 - 14, y + rh - 4, it[3] and "FFFFFF" or "3A3A3A", "00", 5)
+            p[#p + 1] = string.format("{\\an5\\pos(%d,%d)%s\\1c&H%s&\\bord0\\fs13\\b1}%s", px1 - 14 - vw / 2, y + rh / 2 + 1, T, it[3] and "000000" or "C8C8C8", it[2])
+            hits[#hits + 1] = {px0, y, px1, y + rh, it[4]}
+        end
+        hits[#hits + 1] = {px0, py0, px1, py1, function() end}   -- the panel's own background: a click there does nothing
+    end
     menu_ov.data = table.concat(p, "\n")
     menu_ov:update()
 end
@@ -194,6 +213,7 @@ local function draw()
         draw_menu(mx, my)
     elseif menu_on then
         menu_on = false
+        opts_open = false
         hits = {}
         menu_ov:remove()
     end
@@ -209,7 +229,8 @@ local function draw()
     else
         which = want
         shown = want
-        sy0, sy1 = menu_on and 515 or 590, menu_on and 575 or 650
+        sy0, sy1 = menu_on and 580 or 590, menu_on and 640 or 650
+        sx0, sx1 = (menu_on and opts_open) and 700 or 1000, (menu_on and opts_open) and 950 or 1250   -- steps aside for the settings list
         local hot = mx >= sx0 and mx <= sx1 and my >= sy0 and my <= sy1
         local fill = hot and "FFFFFF" or "202020"
         local text = hot and "000000" or "FFFFFF"
