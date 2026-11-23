@@ -66,6 +66,8 @@ local menu_ov = mp.create_osd_overlay("ass-events")
 skip_ov.res_x, skip_ov.res_y = 1280, 720
 menu_ov.res_x, menu_ov.res_y = 1280, 720
 local menu_until, menu_on = 0, false
+local fade, fade_t = 0, 0   -- the menu fades: `fade` runs 0..1 (in 0.1 s, out 0.25 s); every alpha is scaled by it
+local opts_open = false     -- the SETTINGS list is showing
 local shown, which, bound = nil, nil, false
 local hits = {}   -- the menu's click targets, in 1280x720 coordinates: {x0, y0, x1, y1, fn}
 local sx0, sy0, sx1, sy1 = 1000, 590, 1250, 650   -- the skip button (moves up while the menu is open)
@@ -94,7 +96,7 @@ local function click(t)
                 return
             end
         end
-        if my >= 650 then return end   -- the bar itself: nothing
+        if my >= 672 then return end   -- the bar itself: nothing
     end
     mp.commandv("cycle", "pause")   -- not on a button: the default click-to-pause
 end
@@ -105,9 +107,6 @@ local function fmt(s)
     return string.format("%02d:%02d", math.floor(s / 60), s % 60)
 end
 
--- the menu fades: `fade` runs 0..1 (in 0.1 s, out 0.25 s); every alpha is scaled by it
-local fade, fade_t = 0, 0
-local opts_open = false   -- the SETTINGS list
 local function fa(base)   -- ASS alpha (0 = opaque .. 255 = clear) of something that is `base` when fully faded in
     return string.format("%02X", math.floor(255 - (255 - base) * fade + 0.5))
 end
@@ -125,15 +124,13 @@ local function draw_menu(mx, my)
     local p = {}
     local T = "\\alpha&H" .. fa(0) .. "&"   -- text opacity
     local function inside(x0, y0, x1, y1) return mx >= x0 and mx <= x1 and my >= y0 and my <= y1 end
-    -- the bar: title / time, seek line, one row of buttons (everything else lives in the SETTINGS list)
-    rect(p, 0, 650, 1280, 720, "000000", "50")
-    p[#p + 1] = string.format("{\\an4\\pos(28,663)%s\\1c&HFFFFFF&\\bord0\\fs18\\b1}%s{\\fs14\\b0\\1c&HC8C8C8&}   %s", T, clean(title), string.upper(eng.mode))
-    p[#p + 1] = string.format("{\\an6\\pos(1252,663)%s\\1c&HFFFFFF&\\bord0\\fs15\\b0}%s {\\1c&H909090&}/ %s", T, fmt(pos), fmt(dur))
+    -- the bar: a seek line over one row (transport buttons, title, time, volume, SETTINGS)
+    rect(p, 0, 672, 1280, 720, "000000", "50")
     local frac = dur > 0 and math.min(1, pos / dur) or 0
-    rect(p, 28, 675, 1252, 680, "5A5A5A", "30", 2)
-    if frac > 0 then rect(p, 28, 675, 28 + 1224 * frac, 680, "FFFFFF", "00", 2) end
-    rect(p, 28 + 1224 * frac - 5, 672, 28 + 1224 * frac + 5, 683, "FFFFFF", "00", 5)
-    hits[#hits + 1] = {28, 668, 1252, 688, function(x)
+    rect(p, 28, 679, 1252, 683, "5A5A5A", "30", 2)
+    if frac > 0 then rect(p, 28, 679, 28 + 1224 * frac, 683, "FFFFFF", "00", 2) end
+    rect(p, 28 + 1224 * frac - 5, 675, 28 + 1224 * frac + 5, 687, "FFFFFF", "00", 5)
+    hits[#hits + 1] = {28, 672, 1252, 690, function(x)
         mp.commandv("seek", tostring(math.max(0, math.min(100, (x - 28) / 1224 * 100))), "absolute-percent")
     end}
     local function pill(x, y, label, on, fn, h)
@@ -152,15 +149,18 @@ local function draw_menu(mx, my)
         {"+10s", function() mp.commandv("seek", "10", "relative") end},
         {"NEXT", function() ctl("next") end},
         {"STOP", function() ctl("stop") end},
-    }) do x = x + pill(x, 690, it[1], it[3], it[2], 24) + 6 end
+    }) do x = x + pill(x, 692, it[1], it[3], it[2], 24) + 6 end
+    -- title and time in the middle of the row
+    p[#p + 1] = string.format("{\\an4\\pos(%d,705)%s\\1c&HFFFFFF&\\bord0\\fs16\\b1}%s{\\fs13\\b0\\1c&HC8C8C8&}   %s", x + 14, T, clean(title), string.upper(eng.mode))
+    p[#p + 1] = string.format("{\\an6\\pos(930,705)%s\\1c&HFFFFFF&\\bord0\\fs14\\b0}%s {\\1c&H909090&}/ %s", T, fmt(pos), fmt(dur))
     -- volume (0-130) and the SETTINGS button, right-aligned
-    p[#p + 1] = string.format("{\\an6\\pos(1000,703)%s\\1c&HC8C8C8&\\bord0\\fs13\\b1}VOL", T)
-    rect(p, 1010, 700, 1140, 705, "5A5A5A", "30", 2)
-    rect(p, 1010, 700, 1010 + 130 * math.min(1, st.volume / 130), 705, "FFFFFF", "00", 2)
-    hits[#hits + 1] = {1004, 692, 1146, 714, function(mxv)
+    p[#p + 1] = string.format("{\\an6\\pos(1000,705)%s\\1c&HC8C8C8&\\bord0\\fs13\\b1}VOL", T)
+    rect(p, 1010, 702, 1140, 707, "5A5A5A", "30", 2)
+    rect(p, 1010, 702, 1010 + 130 * math.min(1, st.volume / 130), 707, "FFFFFF", "00", 2)
+    hits[#hits + 1] = {1004, 694, 1146, 716, function(mxv)
         mp.commandv("set", "volume", tostring(math.floor(math.max(0, math.min(130, (mxv - 1010) / 130 * 130)))))
     end}
-    pill(1160, 690, "SETTINGS", opts_open, function() opts_open = not opts_open end, 24)
+    pill(1160, 692, "SETTINGS", opts_open, function() opts_open = not opts_open end, 24)
 
     -- the settings list: a side panel above the bar's right end, so the subtitles (bottom centre) stay clear
     if opts_open then
@@ -182,7 +182,7 @@ local function draw_menu(mx, my)
         }
         local rh = 28
         local px0, px1 = 1000, 1252
-        local py1 = 644
+        local py1 = 666
         local py0 = py1 - #items * rh - 12
         rect(p, px0, py0, px1, py1, "000000", "40", 8)
         for i, it in ipairs(items) do
@@ -229,7 +229,7 @@ local function draw()
     else
         which = want
         shown = want
-        sy0, sy1 = menu_on and 580 or 590, menu_on and 640 or 650
+        sy0, sy1 = menu_on and 600 or 590, menu_on and 660 or 650
         sx0, sx1 = (menu_on and opts_open) and 700 or 1000, (menu_on and opts_open) and 950 or 1250   -- steps aside for the settings list
         local hot = mx >= sx0 and mx <= sx1 and my >= sy0 and my <= sy1
         local fill = hot and "FFFFFF" or "202020"
