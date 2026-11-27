@@ -7,6 +7,15 @@
 #include <cmath>
 #include <ctime>
 #include <future>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <SDL.h>
+#include <spawn.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <cerrno>
+extern char **environ;
+#endif
 
 #include "../core/core.hpp"
 #include "../core/multisrc.hpp"
@@ -52,6 +61,7 @@ App::App(Renderer& r_, double ratio_) : r(r_), ratio(ratio_), text(r_, ratio_), 
     tasks_.on_error = [this](const std::string& e) { status = "UI error: " + e; };
     engine->send = [this](const json& ev) { tasks_.post([this, ev] { on_engine_event(ev); }); };
     json cfg = themes::load_settings();
+    if (cfg.contains("series_audio") && cfg["series_audio"].is_object()) series_audio = cfg["series_audio"];
     call("control", {{"action", "autofs"}, {"value", cfg.value("auto_fullscreen", false)}});
     auto_intro = false;  // one-shot now: never remembered across launches
     auto_outro = cfg.value("auto_skip_outro", false);
@@ -1135,7 +1145,7 @@ void App::home() {
 void App::on_pointer_move(double x, double y) {
     mouse = {x, y};
     last_input = t;
-    if (down && !buttons_held.empty()) {
+    if (detail_ep.empty() && down && !buttons_held.empty()) {
         double dx = x - down->first, dy = y - down->second;
         if (dragged || std::hypot(dx, dy) > 5) {
             dragged = true;
@@ -1181,6 +1191,7 @@ void App::on_pointer_up(double x, double y, int button) {
 }
 
 void App::on_wheel(double dy) {
+    if (!detail_ep.empty()) return;
     last_input = t;
     if (adv_open) adv_scroll = std::max(0.0, adv_scroll + (dy > 0 ? 60 : -60));
     else if (mode == "library" && lib && lib->drawer && !lib->pick && mouse.first < 340) lib->drawer_scroll += dy > 0 ? 1 : -1;
@@ -1202,6 +1213,10 @@ void App::on_char(const std::string& c) {
 }
 
 void App::on_key_down(const std::string& key, const std::set<std::string>& mods_) {
+    if (!detail_ep.empty()) {
+        if (key == "Escape" || key == "Backspace") detail_ep.clear();
+        return;
+    }
     mods = mods_;
     last_input = t;
     {
@@ -1341,6 +1356,7 @@ void App::click(double x, double y) {
             return;
         }
     }
+    if (!detail_ep.empty()) return;
     typing = false;
     if (video_on) {  // a click on the picture: pause / resume, and bring the controls up
         control("pause");
@@ -1364,8 +1380,87 @@ void App::click(double x, double y) {
         return;
     }
     if (ref.kind == "ped") open_ped(ref.i);
-    else if (ref.kind == "ep") play(ref.s);
+    else if (ref.kind == "ep" && scene.field) {
+        open_episode(ref.s);
+    }
     else if (ref.kind == "root") home();
+}
+
+void App::download_episodes(std::vector<std::string> episodes, std::string language) {
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (!download_label.empty() || episodes.empty()) return;
+    const auto& ped = scene.peds[scene.field->idx];
+    download_label = "Preparing download";
+    download_percent = 0;
+    detail_ep.clear();
+    tasks_.run([this, title = ped.title, id = ped.id, episodes, language] {
+        for (size_t i = 0; i < episodes.size(); ++i) {
+            auto update = [this, i, total = episodes.size(), ep = episodes[i]](int percent) {
+                tasks_.post([this, i, total, ep, percent] {
+                    download_label = "Episode " + ep + "  (" + std::to_string(i + 1) + "/" + std::to_string(total) + ")";
+                    download_percent = (100 * i + percent) / total;
+                });
+            };
+            update(0);
+            std::vector<std::string> args{"python3", "tools/offline.py", "download", "--audio", language, "--id", id, "--", title, episodes[i]};
+            std::vector<char*> argv;
+            for (auto& arg : args) argv.push_back(arg.data());
+            argv.push_back(nullptr);
+            int fd[2];
+            if (pipe2(fd, O_CLOEXEC)) throw std::runtime_error("Could not read download progress");
+            posix_spawn_file_actions_t actions;
+            posix_spawn_file_actions_init(&actions);
+            posix_spawn_file_actions_adddup2(&actions, fd[1], STDOUT_FILENO);
+            pid_t pid;
+            int error = posix_spawnp(&pid, argv[0], &actions, nullptr, argv.data(), environ);
+            posix_spawn_file_actions_destroy(&actions);
+            close(fd[1]);
+            if (error) { close(fd[0]); throw std::runtime_error("Could not start downloader"); }
+            if (FILE* output = fdopen(fd[0], "r")) {
+                char line[256];
+                int percent;
+                while (fgets(line, sizeof(line), output))
+                    if (sscanf(line, "PROGRESS %d", &percent) == 1) update(std::clamp(percent, 0, 99));
+                fclose(output);
+            } else close(fd[0]);
+            int code;
+            while (waitpid(pid, &code, 0) < 0)
+                if (errno != EINTR) throw std::runtime_error("Could not read download status");
+            if (!WIFEXITED(code) || WEXITSTATUS(code))
+                throw std::runtime_error("Download stopped at episode " + episodes[i] + ". Retry to resume.");
+            update(100);
+        }
+        return json(title);
+    }, [this](const json& saved, const std::string& error) {
+        download_label.clear();
+        status = error.empty() ? "Download complete: " + saved.get<std::string>() + " in Videos/ani-c3d" : error;
+    });
+#endif
+}
+
+void App::open_episode(const std::string& ep) {
+    auto title = scene.peds[scene.field->idx].title;
+    int idx = scene.field->idx;
+    if (!scene.peds[idx].poster) {
+        tasks_.run([title] { return json(core::episode_cover(title)); },
+            [this, idx, gen = rows_gen](const json& cover, const std::string& error) {
+                if (gen != rows_gen || idx >= (int)scene.peds.size() || scene.peds[idx].poster ||
+                    !error.empty() || !cover.is_string() || cover == "") return;
+                scene.peds[idx].poster_url = cover.get<std::string>();
+                load_poster(gen, idx);
+            });
+    }
+    detail_ep = ep;
+    confirm_season = false;
+    detail_audio = series_audio.value(title, audio);
+    detail_desc = "Loading episode synopsis...";
+    int generation = ++detail_generation;
+    tasks_.run([title, ep] { return json(core::episode_synopsis(title, ep)); },
+        [this, generation](const json& result, const std::string& err) {
+            if (generation != detail_generation || detail_ep.empty()) return;
+            detail_desc = !err.empty() ? "Could not load the episode synopsis." :
+                result == "" ? "No synopsis is available for this episode." : result.get<std::string>();
+        });
 }
 
 std::pair<V3, V3> App::mouse_ray() const {
@@ -1501,6 +1596,13 @@ void App::frame(int target_fbo, int phys_w, int phys_h, double ratio_, double dt
     r.add_boxes(fx);
     hits.clear();
     hud(W, H);
+    if (!download_label.empty()) {
+        double w = std::min(340., W - 24), x = W - w - 12;
+        panel(x, H - 60, w, 52);
+        txt(download_label + "   " + std::to_string(download_percent) + "%", x + 12, H - 52, 15, theme_->text);
+        r.rect(x + 12, H - 25, w - 24, 7, C4(.22,.22,.25,1));
+        r.rect(x + 12, H - 25, (w - 24) * download_percent / 100., 7, C4(theme_->accent.r, theme_->accent.g, theme_->accent.b, 1));
+    }
     r.render(target_fbo);
 }
 

@@ -42,6 +42,15 @@ public:
     TextInput q_in, lib_in;
     bool typing = true;
     std::string audio = "sub";
+    std::string detail_ep, detail_desc, detail_audio;
+    int detail_generation = 0;
+    json series_audio = json::object();
+    void open_episode(const std::string& ep);
+    bool confirm_season = false;
+    std::string download_label;
+    int download_percent = 0;
+    void download_episodes(std::vector<std::string> episodes, std::string language);
+    void episode_panel(double W, double H);
     std::set<std::string> mods;
     std::string status = "Type an anime name and press Enter";
     json player = json::object();

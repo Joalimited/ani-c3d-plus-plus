@@ -1290,6 +1290,49 @@ json media_blurb(const std::string& title, const std::string& kind) {
     });
 }
 
+static json tvmaze_show(const std::string& title) {
+    return cache::cached("tvmaze-anime:" + title, 86400, [&]() -> json {
+        const auto rows = get_json(rq("https://api.tvmaze.com/search/shows", {{"q", title}}, 5));
+        for (const auto& row : rows) {
+            const auto& show = row.at("show");
+            if (S(show, "type") == "Animation" && multisrc::same_show(title, S(show, "name")))
+                return {{"id", show.at("id")}, {"cover", S(O(show, "image"), "medium")}};
+        }
+        return nullptr;
+    });
+}
+
+std::string episode_cover(const std::string& title) { return S(tvmaze_show(title), "cover"); }
+
+std::string episode_synopsis(const std::string& title, const std::string& ep) {
+    if (ep.empty() || ep.find_first_not_of("0123456789") != std::string::npos) return "";
+    return cache::cached("episode-description-v2:" + title + ":" + ep, 86400, [&]() -> json {
+        try {
+            auto show = tvmaze_show(title);
+            if (!show.is_null()) {
+                auto episode = get_json(rq("https://api.tvmaze.com/shows/" + show.at("id").dump() +
+                    "/episodebynumber", {{"season", "1"}, {"number", ep}}, 5));
+                auto desc = clean_desc(S(episode, "summary"), 900);
+                if (!desc.empty()) return desc;
+            }
+        } catch (const std::exception&) {
+            // Try the season-specific anime listing when TVmaze has no matching summary.
+        }
+        auto series = cache::cached("jikan-series:" + title, 86400, [&]() -> json {
+            auto result = get_json(rq("https://api.jikan.moe/v4/anime", {{"q", title}, {"limit", "8"}}));
+            for (const auto& row : result.at("data"))
+                for (const auto& alias : row.at("titles"))
+                    if (multisrc::same_show(title, S(alias, "title"))) return row.at("mal_id");
+            return nullptr;
+        });
+        if (!series.is_number_integer()) return "";
+        auto response = http::request(rq("https://api.jikan.moe/v4/anime/" + series.dump() + "/episodes/" + ep));
+        if (response.status == 404) return "";
+        if (response.status != 200) throw std::runtime_error("Episode lookup unavailable");
+        return clean_desc(S(json::parse(response.body).at("data"), "synopsis"), 900);
+    }).get<std::string>();
+}
+
 json home_data() {
     json cont = continue_list();
     auto pop_f = std::async(std::launch::async, [] {

@@ -41,6 +41,11 @@ needs Windows 10 or newer.
 `ani-c3d --check` runs a self-check (graphics, sources, the history database, mpv, fonts) and prints what works and what
 doesn't. On Windows give it a file to write to: `ani-c3d.exe --check check.txt`.
 
+On Linux, with the native build and `ffmpeg` installed, click an episode in the 3D browser to see its synopsis, choose sub or dub for the series, then select **Play** or **Download**. Downloads are saved under
+`~/Videos/ani-c3d`. Keep the app open until it reports the episode is saved. The MKV contains H.264 video, AAC audio,
+and subtitles when supplied by the source. Open it in mpv offline. With the local launcher, you can also use
+`ani-c3d download "Show Title" 1` and `ani-c3d offline` to choose a saved episode.
+
 If you used the Python ani-3d before, ani-c3d picks up the same watch history and, on its first start, your ani-3d
 settings (theme, reading direction, skip switches, recent librarian searches).
 

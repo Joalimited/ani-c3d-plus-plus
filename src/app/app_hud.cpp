@@ -5,6 +5,7 @@
 
 #include "../core/core.hpp"
 #include "../util/strutil.hpp"
+#include "../util/paths.hpp"
 #include "../world/effects.hpp"
 #include "app.hpp"
 #include "../core/androidplayer.hpp"
@@ -231,6 +232,8 @@ void App::egg_draw(double W, double H) {
 
 void App::hud(double W, double H) {
     const Theme& th = *theme_;
+    if (!detail_ep.empty() && scene.field && mode == "world") return episode_panel(W, H);
+    detail_ep.clear();
     egg_draw(W, H);
     if (video_on && t >= hud_until) {  // watching: only the picture, subtitles and the skip prompt
         video_overlay(W, H);
@@ -312,7 +315,7 @@ void App::hud(double W, double H) {
 
     // status + hover hint
     std::string hint = status;
-    if (hover.kind == "ep" && scene.field) hint = "EPISODE " + hover.s + "  " + (scene.field->watched.count(hover.s) ? "(watched)" : "") + "  - click to play";
+    if (hover.kind == "ep" && scene.field) hint = "EPISODE " + hover.s + "  " + (scene.field->watched.count(hover.s) ? "(watched)" : "") + "  - click for episode details";
     else if (hover.kind == "ped") hint = scene.peds[hover.i].title + "  - click to open";
     else if (hover.kind == "root") hint = "click to return to the overview";
     if (mode == "world") {
@@ -365,6 +368,64 @@ void App::hud(double W, double H) {
         toast_hud(W, H);
         if (th.fx == "vcr") vcr_overlay(W, H);
     }
+}
+
+void App::episode_panel(double W, double H) {
+    const auto& th = *theme_;
+    const auto& title = scene.peds[scene.field->idx].title;
+    double w = std::min(700.0, W - 24), h = std::min(420.0, H - 16);
+    double x = (W - w) / 2, y = (H - h) / 2;
+    r.rect(0, 0, W, H, C4(0, 0, 0, .72));
+    panel(x, y, w, h);
+    txt("EPISODE " + detail_ep, x + 20, y + 14, 14, th.accent);
+    button("CLOSE", x + w - 90, y + 10, 74, 28, [this] { detail_ep.clear(); });
+    double line_y = y + 48;
+    double text_x = x + 20, text_w = w - 40;
+    if (auto poster = scene.peds[scene.field->idx].poster) {
+        double cover_w = std::min({150., w * .24, (h - 165) * 2 / 3});
+        if (cover_w > 0) {
+            r.quad2d(poster, text_x, line_y, cover_w, cover_w * 1.5);
+            text_x += cover_w + 16;
+            text_w -= cover_w + 16;
+        }
+    }
+    for (auto& line : wrap(title, 21, text_w, 2)) {
+        txt(line, text_x, line_y, 21, th.text);
+        line_y += 25;
+    }
+    line_y += 8;
+    size_t lines = (size_t)std::max(1., std::floor((y + h - 108 - line_y) / 18));
+    for (auto& line : wrap(detail_desc, 14, text_w, lines)) {
+        txt(line, text_x, line_y, 14, th.text);
+        line_y += 18;
+    }
+    txt("Series audio", x + 20, y + h - 95, 14, th.dim);
+    auto choose = [this, title](std::string language) {
+        detail_audio = language;
+        series_audio[title] = language;
+        themes::save_settings({{"series_audio", series_audio}});
+    };
+    button("SUB", x + 134, y + h - 102, 64, 30, [choose] { choose("sub"); }, detail_audio == "sub");
+    button("DUB", x + 204, y + h - 102, 64, 30, [choose] { choose("dub"); }, detail_audio == "dub");
+    button("PLAY", x + 20, y + h - 55, 110, 38, [this] {
+        auto ep = detail_ep;
+        detail_ep.clear();
+        audio = detail_audio;
+        play(ep);
+    });
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (paths::exists("tools/offline.py") && download_label.empty()) {
+        button("DOWNLOAD", x + 140, y + h - 55, 132, 38, [this] {
+            download_episodes({detail_ep}, detail_audio);
+        });
+        auto count = scene.field->eps.size();
+        button(confirm_season ? "CONFIRM " + std::to_string(count) + " EPS" : "DOWNLOAD SEASON",
+               x + 282, y + h - 55, w - 302, 38, [this] {
+                   if (confirm_season) download_episodes(scene.field->eps, detail_audio);
+                   else confirm_season = true;
+               }, confirm_season);
+    }
+#endif
 }
 
 void App::suggestions_dropdown(double sx, double sw) {

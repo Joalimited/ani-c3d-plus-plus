@@ -49,7 +49,7 @@ void Camera::pan(double dx, double dy) {
     V3 right(std::cos(yaw), 0, -std::sin(yaw));
     V3 fwd(-std::sin(yaw), 0, -std::cos(yaw));
     double s = dist * 0.0016;
-    g_target = g_target - right * (dx * s) + fwd * (dy * s * -1);
+    g_target = g_target - right * (dx * s) + fwd * (dy * s);
     target = g_target;
 }
 
