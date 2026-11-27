@@ -76,5 +76,7 @@ json anilist_top(int n = 24);
 json recommended(const std::vector<std::string>& seeds, const std::vector<std::string>& exclude, int n = 18);
 std::string clean_desc(const std::string& s, size_t cap = 420);
 json media_blurb(const std::string& title, const std::string& kind = "anime");
+std::string episode_cover(const std::string& title);
+std::string episode_synopsis(const std::string& title, const std::string& ep);
 json home_data();
 }  // namespace core

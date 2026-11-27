@@ -18,6 +18,7 @@
 #endif
 #include "core/core.hpp"
 #include "core/scrape.hpp"
+#include "core/multisrc.hpp"
 #include "gfx/gl.hpp"
 #include "gfx/image.hpp"
 #include "gfx/text.hpp"
@@ -696,6 +697,22 @@ int main(int argc, char** argv) {
     }
     http::init();
     std::vector<std::string> args(argv + 1, argv + argc);
+    if (!args.empty() && args[0] == "--download-source") {
+        if (args.size() != 4 && args.size() != 5) return 2;
+        try {
+            auto rows = args.size() == 5 ? std::vector<scrape::Row>{{args[4], args[1], ""}} : multisrc::search(args[1]);
+            for (const auto& row : rows) {
+                if (!multisrc::same_show(row.title, args[1])) continue;
+                auto stream = multisrc::link(row.id, args[2], args[3], row.title);
+                std::cout << json{{"title", row.title}, {"url", stream.url}, {"referer", stream.referer}, {"subtitle", stream.sub}}.dump() << std::endl;
+                return 0;
+            }
+            std::cerr << "No matching title. Use the full title shown in anime search.\n";
+        } catch (const std::exception& e) {
+            std::cerr << e.what() << std::endl;
+        }
+        return 1;
+    }
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
         report_crash(std::string("SDL could not start: ") + SDL_GetError());
         return 1;
